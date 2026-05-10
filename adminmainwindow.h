@@ -1,0 +1,83 @@
+#ifndef ADMINMAINWINDOW_H
+#define ADMINMAINWINDOW_H
+
+#include "databasemanager.h"
+#include <QMainWindow>
+#include <QSqlQueryModel>
+#include <QMessageBox>
+#include <QHeaderView>
+#include <QInputDialog>
+#include <QFileDialog>
+#include <QDateTime>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QFile>
+#include <QDir>
+#include <QDebug>
+
+
+namespace Ui {
+class AdminMainWindow;
+}
+
+class AdminMainWindow : public QMainWindow
+{
+    Q_OBJECT
+
+public:
+    explicit AdminMainWindow(const QString &adminId, QWidget *parent = nullptr);
+    ~AdminMainWindow();
+
+
+private slots:
+    void on_actionNew_triggered();
+
+    void on_actionDelete_triggered();
+
+    void on_actionRefresh_triggered();
+
+    void on_actionBackup_triggered();
+
+    void on_actionRestore_triggered();
+
+    void on_actionExit_triggered();
+
+    void on_tableWidget_itemSelectionChanged();
+
+    void on_action_new_triggered();
+
+    void on_action_delete_triggered();
+
+    void on_action_backup_triggered();
+
+    void on_action_restore_triggered();
+
+    void on_action_exit_triggered();
+
+    void on_action_refresh_triggered();
+
+    void on_action_dataanalysis_triggered();
+
+    void on_action_changepassword_triggered();
+
+    void on_action_changequestoions_triggered();
+
+private:
+    Ui::AdminMainWindow *ui;
+    DatabaseManager *m_dbManager;
+
+    // 初始化函数
+    void initUI();
+    void loadTeacherData();
+
+    // 辅助函数
+    bool deleteTeacherDatabase(const QString &teacherId);
+    bool backupDatabase();
+    bool restoreDatabase();
+
+    // 当前选中的教师ID
+    QString m_selectedTeacherId;
+    QString m_adminId;
+};
+
+#endif // ADMINMAINWINDOW_H

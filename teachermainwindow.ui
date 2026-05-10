@@ -1,0 +1,1108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TeacherMainWindow</class>
+ <widget class="QMainWindow" name="TeacherMainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1600</width>
+    <height>900</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>1600</width>
+    <height>900</height>
+   </size>
+  </property>
+  <property name="maximumSize">
+   <size>
+    <width>1600</width>
+    <height>900</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>MainWindow</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <widget class="QListWidget" name="listWidget_classes">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>20</y>
+      <width>300</width>
+      <height>800</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>300</width>
+      <height>800</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>300</width>
+      <height>800</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>16</pointsize>
+     </font>
+    </property>
+    <property name="contextMenuPolicy">
+     <enum>Qt::ContextMenuPolicy::CustomContextMenu</enum>
+    </property>
+    <property name="isWrapping" stdset="0">
+     <bool>true</bool>
+    </property>
+    <property name="spacing">
+     <number>6</number>
+    </property>
+   </widget>
+   <widget class="QTableWidget" name="tableWidget_students">
+    <property name="geometry">
+     <rect>
+      <x>330</x>
+      <y>60</y>
+      <width>1120</width>
+      <height>680</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>1120</width>
+      <height>680</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>1120</width>
+      <height>680</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>16</pointsize>
+     </font>
+    </property>
+    <attribute name="horizontalHeaderDefaultSectionSize">
+     <number>138</number>
+    </attribute>
+    <attribute name="horizontalHeaderStretchLastSection">
+     <bool>true</bool>
+    </attribute>
+    <attribute name="verticalHeaderMinimumSectionSize">
+     <number>30</number>
+    </attribute>
+    <attribute name="verticalHeaderDefaultSectionSize">
+     <number>40</number>
+    </attribute>
+    <column>
+     <property name="text">
+      <string>学号</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+    <column>
+     <property name="text">
+      <string>姓名</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+    <column>
+     <property name="text">
+      <string>性别</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+    <column>
+     <property name="text">
+      <string>年龄</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+    <column>
+     <property name="text">
+      <string>班级</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+    <column>
+     <property name="text">
+      <string>电话</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+    <column>
+     <property name="text">
+      <string>地址</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+    <column>
+     <property name="text">
+      <string>创建时间</string>
+     </property>
+     <property name="font">
+      <font>
+       <family>宋体</family>
+       <pointsize>16</pointsize>
+      </font>
+     </property>
+    </column>
+   </widget>
+   <widget class="QLineEdit" name="lineEdit_search">
+    <property name="geometry">
+     <rect>
+      <x>520</x>
+      <y>10</y>
+      <width>300</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>300</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>300</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="placeholderText">
+     <string>搜索学生</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_search">
+    <property name="geometry">
+     <rect>
+      <x>1000</x>
+      <y>10</y>
+      <width>100</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>100</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>100</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>搜索</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_prev">
+    <property name="geometry">
+     <rect>
+      <x>700</x>
+      <y>790</y>
+      <width>100</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>100</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>100</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>上一页</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_pageInfo">
+    <property name="geometry">
+     <rect>
+      <x>560</x>
+      <y>790</y>
+      <width>120</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>120</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>120</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>第1页/共5页</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_next">
+    <property name="geometry">
+     <rect>
+      <x>1120</x>
+      <y>790</y>
+      <width>100</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>100</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>100</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>下一页</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_page1">
+    <property name="geometry">
+     <rect>
+      <x>820</x>
+      <y>790</y>
+      <width>30</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>1</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_page2">
+    <property name="geometry">
+     <rect>
+      <x>870</x>
+      <y>790</y>
+      <width>30</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>2</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_page3">
+    <property name="geometry">
+     <rect>
+      <x>920</x>
+      <y>790</y>
+      <width>30</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>3</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_page4">
+    <property name="geometry">
+     <rect>
+      <x>970</x>
+      <y>790</y>
+      <width>30</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>4</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_page5">
+    <property name="geometry">
+     <rect>
+      <x>1020</x>
+      <y>790</y>
+      <width>30</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>5</string>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="pushButton_ellipsis">
+    <property name="geometry">
+     <rect>
+      <x>1070</x>
+      <y>790</y>
+      <width>30</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>30</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox">
+    <property name="geometry">
+     <rect>
+      <x>850</x>
+      <y>10</y>
+      <width>120</width>
+      <height>30</height>
+     </rect>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>120</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>120</width>
+      <height>30</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <item>
+     <property name="text">
+      <string>学号</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>姓名</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>性别</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>年龄</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>班级</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>电话</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>地址</string>
+     </property>
+    </item>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menubar_main">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1600</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <widget class="QMenu" name="menu_student">
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="title">
+     <string>学生管理</string>
+    </property>
+    <addaction name="action_addStudent"/>
+    <addaction name="action_deleteStudent"/>
+    <addaction name="action_editStudent"/>
+   </widget>
+   <widget class="QMenu" name="menu_score">
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="title">
+     <string>成绩管理</string>
+    </property>
+    <addaction name="action_inputGrade"/>
+    <addaction name="action_deleteGrade"/>
+    <addaction name="action_modifyGrade"/>
+    <addaction name="action_viewGrade"/>
+   </widget>
+   <widget class="QMenu" name="menu_data">
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="title">
+     <string>数据操作</string>
+    </property>
+    <addaction name="action_classGPA"/>
+    <addaction name="action_allStudentsGPA"/>
+    <addaction name="separator"/>
+    <addaction name="action_subjectClass"/>
+    <addaction name="action_subjectAll"/>
+    <addaction name="separator"/>
+    <addaction name="action_refreshList"/>
+   </widget>
+   <widget class="QMenu" name="menu_personal">
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="title">
+     <string>账号设置</string>
+    </property>
+    <addaction name="action_changePassword"/>
+    <addaction name="action_changequestions"/>
+    <addaction name="separator"/>
+    <addaction name="action_exit_2"/>
+   </widget>
+   <widget class="QMenu" name="menu">
+    <property name="font">
+     <font>
+      <family>宋体</family>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="title">
+     <string>课程管理</string>
+    </property>
+    <addaction name="action_addSubject"/>
+    <addaction name="action_editSubject"/>
+    <addaction name="action_deleteSubject"/>
+    <addaction name="action_manageSubjects"/>
+   </widget>
+   <addaction name="menu_student"/>
+   <addaction name="menu"/>
+   <addaction name="menu_score"/>
+   <addaction name="menu_data"/>
+   <addaction name="menu_personal"/>
+  </widget>
+  <widget class="QToolBar" name="toolBar">
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="windowTitle">
+    <string>toolBar</string>
+   </property>
+   <attribute name="toolBarArea">
+    <enum>LeftToolBarArea</enum>
+   </attribute>
+   <attribute name="toolBarBreak">
+    <bool>false</bool>
+   </attribute>
+   <addaction name="action_add"/>
+   <addaction name="action_add_class"/>
+   <addaction name="action_addSubject_2"/>
+   <addaction name="separator"/>
+   <addaction name="action_edit"/>
+   <addaction name="action_edit_class"/>
+   <addaction name="action_editSubject_2"/>
+   <addaction name="separator"/>
+   <addaction name="action_delete"/>
+   <addaction name="action_delete_class"/>
+   <addaction name="action_deleteSubject_2"/>
+   <addaction name="separator"/>
+   <addaction name="action_refresh"/>
+   <addaction name="action_exit"/>
+   <addaction name="separator"/>
+  </widget>
+  <widget class="QStatusBar" name="statusBar"/>
+  <action name="action_addStudent">
+   <property name="text">
+    <string>添加学生</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_deleteStudent">
+   <property name="text">
+    <string>删除学生</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_editStudent">
+   <property name="text">
+    <string>编辑信息</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_refreshList">
+   <property name="text">
+    <string>刷新列表</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_inputGrade">
+   <property name="text">
+    <string>录入成绩</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_modifyGrade">
+   <property name="text">
+    <string>修改成绩</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_viewGrade">
+   <property name="text">
+    <string>查看成绩</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_changePassword">
+   <property name="text">
+    <string>修改密码</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_add">
+   <property name="text">
+    <string>➕ 添加学生</string>
+   </property>
+   <property name="toolTip">
+    <string>添加新学生</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_edit">
+   <property name="text">
+    <string>✏️ 编辑学生</string>
+   </property>
+   <property name="toolTip">
+    <string>编辑选中学生</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_delete">
+   <property name="text">
+    <string>❌ 删除学生</string>
+   </property>
+   <property name="toolTip">
+    <string>删除选中学生</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_refresh">
+   <property name="text">
+    <string>🔄 刷新列表</string>
+   </property>
+   <property name="toolTip">
+    <string>刷新列表</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_exit">
+   <property name="text">
+    <string>🚪 退出系统</string>
+   </property>
+   <property name="toolTip">
+    <string>退出系统</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_add_class">
+   <property name="text">
+    <string>➕ 添加班级</string>
+   </property>
+   <property name="toolTip">
+    <string>添加学生班级</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_edit_class">
+   <property name="text">
+    <string>✏️ 编辑班级</string>
+   </property>
+   <property name="toolTip">
+    <string>编辑学生班级</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_delete_class">
+   <property name="text">
+    <string>❌ 删除班级</string>
+   </property>
+   <property name="toolTip">
+    <string>删除学生班级</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_changequestions">
+   <property name="text">
+    <string>修改密保问题</string>
+   </property>
+   <property name="toolTip">
+    <string>修改密保问题</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_exit_2">
+   <property name="text">
+    <string>退出系统</string>
+   </property>
+   <property name="toolTip">
+    <string>退出系统</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_addSubject">
+   <property name="text">
+    <string>添加课程</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_editSubject">
+   <property name="text">
+    <string>修改课程</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_deleteSubject">
+   <property name="text">
+    <string>删除课程</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+  </action>
+  <action name="action_addSubject_2">
+   <property name="text">
+    <string>➕ 添加课程</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_editSubject_2">
+   <property name="text">
+    <string>✏️ 编辑课程</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_deleteSubject_2">
+   <property name="text">
+    <string>❌ 删除课程</string>
+   </property>
+   <property name="font">
+    <font>
+     <family>宋体</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::NoRole</enum>
+   </property>
+  </action>
+  <action name="action_manageSubjects">
+   <property name="text">
+    <string>管理课程</string>
+   </property>
+  </action>
+  <action name="action_classGPA">
+   <property name="text">
+    <string>班级绩点排名</string>
+   </property>
+  </action>
+  <action name="action_allStudentsGPA">
+   <property name="text">
+    <string>所有学生绩点排名</string>
+   </property>
+  </action>
+  <action name="action_subjectClass">
+   <property name="text">
+    <string>单科班级成绩排名</string>
+   </property>
+  </action>
+  <action name="action_subjectAll">
+   <property name="text">
+    <string>单科所有学生成绩排名</string>
+   </property>
+  </action>
+  <action name="action_deleteGrade">
+   <property name="text">
+    <string>删除成绩</string>
+   </property>
+  </action>
+ </widget>
+ <tabstops>
+  <tabstop>lineEdit_search</tabstop>
+  <tabstop>comboBox</tabstop>
+  <tabstop>pushButton_search</tabstop>
+  <tabstop>listWidget_classes</tabstop>
+  <tabstop>tableWidget_students</tabstop>
+  <tabstop>pushButton_prev</tabstop>
+  <tabstop>pushButton_page1</tabstop>
+  <tabstop>pushButton_page2</tabstop>
+  <tabstop>pushButton_page3</tabstop>
+  <tabstop>pushButton_page4</tabstop>
+  <tabstop>pushButton_page5</tabstop>
+  <tabstop>pushButton_ellipsis</tabstop>
+  <tabstop>pushButton_next</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>
