@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="sql/schema.sql">sql/schema.sql</file>
+        <file alias="sql/seed.sql">sql/seed.sql</file>
+        <file alias="style.qss">resources/style.qss</file>
+    </qresource>
+</RCC>

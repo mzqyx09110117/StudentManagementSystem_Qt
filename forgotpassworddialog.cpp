@@ -67,9 +67,8 @@ void ForgotPasswordDialog::on_pushButton_confirmUser_clicked()
         return;
     }
 
-    // 检查用户是否存在
-    QString userType, userId;
-    bool userExists = DatabaseManager::instance()->validateUser(username, "", userType, userId);
+    // 检查用户是否存在（不进行密码验证）
+    const bool userExists = DatabaseManager::instance()->userExists(username);
 
     if (!userExists) {
         QMessageBox::warning(this, "错误", "用户名不存在");

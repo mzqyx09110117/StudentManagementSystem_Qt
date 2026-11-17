@@ -1,6 +1,8 @@
 #include "addstudentdialog.h"
 #include "ui_addstudentdialog.h"
 
+#include "validation.h"
+
 AddStudentDialog::AddStudentDialog(QWidget *parent)
     : QDialog(parent)
     , ui(new Ui::AddStudentDialog)
@@ -8,13 +10,12 @@ AddStudentDialog::AddStudentDialog(QWidget *parent)
     ui->setupUi(this);
     setWindowTitle(QStringLiteral("添加学生"));
 
-    // 设置年龄初始值
-    ui->spinBox_age->setValue(0);
-    ui->spinBox_age->setMinimum(0);
+    ui->spinBox_age->setMinimum(5);
     ui->spinBox_age->setMaximum(100);
+    ui->spinBox_age->setValue(18);
 
-    // 班级下拉框设置为不可编辑
     ui->comboBox_class->setEditable(false);
+    ui->comboBox_gender->setCurrentIndex(0);
 }
 
 AddStudentDialog::~AddStudentDialog()
@@ -22,11 +23,11 @@ AddStudentDialog::~AddStudentDialog()
     delete ui;
 }
 
-// 添加：设置班级下拉框选项
 void AddStudentDialog::setClassItems(const QStringList &items)
 {
     ui->comboBox_class->clear();
-    ui->comboBox_class->addItems(items);
+    for (const QString &className : items)
+        ui->comboBox_class->addItem(className, className);
 }
 
 QString AddStudentDialog::getStudentId() const
@@ -51,7 +52,7 @@ int AddStudentDialog::getAge() const
 
 QString AddStudentDialog::getClassName() const
 {
-    return ui->comboBox_class->currentText().trimmed();
+    return ui->comboBox_class->currentData().toString();
 }
 
 QString AddStudentDialog::getPhone() const
@@ -66,44 +67,38 @@ QString AddStudentDialog::getAddress() const
 
 void AddStudentDialog::on_pushButton_confirm_clicked()
 {
-    // 验证必填字段
-    if (getStudentId().isEmpty()) {
-        QMessageBox::warning(this, "警告", "学号不能为空！");
-        return;
-    }
-    if (getName().isEmpty()) {
-        QMessageBox::warning(this, "警告", "姓名不能为空！");
+    const QString idError = Validation::accountIdError(getStudentId());
+    if (!idError.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("警告"), idError);
+        ui->lineEdit_studentId->setFocus();
         return;
     }
 
-    QString phone = getPhone().trimmed();  // 去除前后空格
-
-    if (!phone.isEmpty()) {
-        // 检查长度是否为11位
-        if (phone.length() != 11) {
-            QMessageBox::warning(this, "警告", "手机号必须是11位！");
-            return;
-        }
-
-        // 检查开头是否为1
-        if (!phone.startsWith('1')) {
-            QMessageBox::warning(this, "警告", "手机号必须以1开头！");
-            return;
-        }
-
-        // 检查是否全为数字
-        static QRegularExpression re("^\\d+$");
-        if (!re.match(phone).hasMatch()) {
-            QMessageBox::warning(this, "警告", "手机号必须全部由数字组成！");
-            return;
-        }
+    const QString nameError = Validation::nameError(getName());
+    if (!nameError.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("警告"), nameError);
+        ui->lineEdit_name->setFocus();
+        return;
     }
-    accept();  // 关闭对话框并返回Accepted
+
+    if (getClassName().isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("警告"),
+                             QStringLiteral("请选择班级；若没有班级，请先在主界面添加班级"));
+        ui->comboBox_class->setFocus();
+        return;
+    }
+
+    const QString phoneError = Validation::phoneError(getPhone());
+    if (!phoneError.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("警告"), phoneError);
+        ui->lineEdit_phone->setFocus();
+        return;
+    }
+
+    accept();
 }
-
 
 void AddStudentDialog::on_pushButton_2_clicked()
 {
-    reject();  // 关闭对话框并返回Rejected
+    reject();
 }
-

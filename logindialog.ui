@@ -41,7 +41,7 @@
     </font>
    </property>
    <property name="text">
-    <string>学生管理登陆系统</string>
+    <string>学生信息管理系统</string>
    </property>
    <property name="alignment">
     <set>Qt::AlignmentFlag::AlignCenter</set>

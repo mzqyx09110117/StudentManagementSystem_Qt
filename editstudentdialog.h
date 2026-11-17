@@ -48,6 +48,7 @@ private:
     Ui::EditStudentDialog *ui;
     QString m_teacherId;
     QString m_originalStudentId;
+    QString m_className;
 };
 
 #endif // EDITSTUDENTDIALOG_H

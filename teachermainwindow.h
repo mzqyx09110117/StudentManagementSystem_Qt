@@ -13,6 +13,8 @@
 #include <QDialogButtonBox>
 #include <QInputDialog>
 #include <QFileDialog>
+#include <QStringList>
+#include <QTableWidget>
 #include <QTimer>
 
 
@@ -160,12 +162,27 @@ private:
     void exportSubjectAllReport();     // 单科所有学生成绩排名
 
     // 辅助方法
-    void showStudentEditDialog(const QMap<QString, QString> &studentInfo = QMap<QString, QString>());
     void loadDataToTable(const QList<QMap<QString, QString>> &studentList);
-    int getTotalStudentCount();  // 获取学生总数（用于分页）
-    QList<QMap<QString, QString>> getStudentsByPage(int page, int pageSize = 10);
-    double calculateGPA(double score);  // 根据成绩计算绩点
-    QString getCurrentSemester();       // 获取当前学期
+    int getTotalStudentCount();
+    QList<QMap<QString, QString>> getStudentsByPage(int page, int pageSize = 15);
+    double calculateGPA(double score);
+    QString getCurrentSemester();
+    QString currentClassFilter() const;
+    QStringList classNames() const;
+    QString selectedStudentId() const;
+    bool addClassInteractive();
+    void renameClass(const QString &oldName);
+    void deleteClass(const QString &className);
+    void createStudentAccountForSelected();
+
+    // 报表导出/打印
+    void exportTableToCsv(QTableWidget *table, const QString &defaultName);
+    void printTable(QTableWidget *table, const QString &title);
+    void showReportDialog(const QString &title, const QStringList &headers,
+                          const QList<QStringList> &rows, const QString &csvName,
+                          const QString &summary = QString());
+
+    QString m_searchKeyword;
 };
 
 #endif // TEACHERMAINWINDOW_H

@@ -70,8 +70,10 @@ void RegisterDialog::on_pushButton_register_clicked()
                                  QString("用户 %1 注册成功！").arg(username));
         this->close();
     } else {
-        QMessageBox::warning(this, "注册失败",
-                             "注册失败，可能是用户名已存在或数据库错误");
+        const QString error = DatabaseManager::instance()->lastError();
+        QMessageBox::warning(this, QStringLiteral("注册失败"),
+                             error.isEmpty() ? QStringLiteral("注册失败，请稍后重试")
+                                             : error);
     }
 }
 
@@ -193,6 +195,13 @@ bool RegisterDialog::validateInput()
                              "密码必须包含至少两种字符类型：\n"
                              "字母、数字、特殊字符（如@#$%等）");
         ui->lineEdit_password->setFocus();
+        return false;
+    }
+
+    if (password != confirm) {
+        QMessageBox::warning(this, "输入错误", "两次输入的密码不一致");
+        ui->lineEdit_confirm->clear();
+        ui->lineEdit_confirm->setFocus();
         return false;
     }
 

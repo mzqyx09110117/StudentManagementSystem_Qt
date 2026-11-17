@@ -53,7 +53,7 @@
     </font>
    </property>
    <property name="text">
-    <string>恢复系统</string>
+    <string>数据库恢复</string>
    </property>
    <property name="alignment">
     <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -152,7 +152,7 @@
     </font>
    </property>
    <property name="text">
-    <string>系统数据库信息：</string>
+    <string>当前数据库：</string>
    </property>
   </widget>
   <widget class="QPlainTextEdit" name="plainTextEdit_teachers">
@@ -248,7 +248,7 @@
     </font>
    </property>
    <property name="text">
-    <string>总备份大小：</string>
+    <string>备份内容：</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_8">
@@ -416,7 +416,7 @@
     </font>
    </property>
    <property name="text">
-    <string>教师数据库统计：</string>
+    <string>备份统计：</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_backupTime">
@@ -447,7 +447,7 @@
     </font>
    </property>
    <property name="text">
-    <string>备份时间标签</string>
+    <string>备份时间：</string>
    </property>
    <property name="alignment">
     <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -515,7 +515,7 @@
     </font>
    </property>
    <property name="text">
-    <string>教师数据库显示：</string>
+    <string>恢复说明：</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_9">
@@ -546,7 +546,7 @@
     </font>
    </property>
    <property name="text">
-    <string>备份时间标签</string>
+    <string>备份时间：</string>
    </property>
   </widget>
   <widget class="QLineEdit" name="lineEdit_backupPath">
@@ -577,7 +577,7 @@
     </font>
    </property>
    <property name="placeholderText">
-    <string>备份文件读取路径</string>
+    <string>备份文件路径</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_totalRestore">

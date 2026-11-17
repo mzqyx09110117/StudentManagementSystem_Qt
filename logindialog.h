@@ -34,8 +34,9 @@ private:
     Ui::LoginDialog *ui;
 
     bool validateInput();
-    QString m_userType;  // 存储用户类型：admin 或 teacher
-    QString m_userId;    // 存储用户ID
+    QString m_userType;  // admin / teacher / student
+    QString m_userId;    // users.user_id
+    int m_failedAttempts = 0;
 };
 
 #endif // LOGINDIALOG_H

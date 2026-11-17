@@ -8,6 +8,21 @@
 #include "changequestionsdialog.h"
 #include "subjectdialog.h"
 #include "gradedialog.h"
+#include "validation.h"
+
+#include <QAction>
+#include <QDate>
+#include <QDir>
+#include <QFile>
+#include <QMenu>
+#include <QMenuBar>
+#include <QPrintDialog>
+#include <QPrinter>
+#include <QRegularExpression>
+#include <QStatusBar>
+#include <QTextDocument>
+#include <QTextStream>
+#include <QVariant>
 
 TeacherMainWindow::TeacherMainWindow(const QString &teacherId, QWidget *parent) :
     QMainWindow(parent),
@@ -15,7 +30,9 @@ TeacherMainWindow::TeacherMainWindow(const QString &teacherId, QWidget *parent) 
     m_teacherId(teacherId)
 {
     ui->setupUi(this);
-    setWindowTitle(QString("教师管理系统 - 教师模式 (%1)").arg(teacherId));
+    const QString displayName = DatabaseManager::instance()->getDisplayName(teacherId);
+    setWindowTitle(QStringLiteral("学生信息管理系统 - 教师端（%1）")
+                       .arg(displayName.isEmpty() ? teacherId : displayName));
 
     // 初始化分页控件
     m_currentPage = 1;
@@ -29,8 +46,30 @@ TeacherMainWindow::TeacherMainWindow(const QString &teacherId, QWidget *parent) 
     m_pageButtons.append(ui->pushButton_page4);
     m_pageButtons.append(ui->pushButton_page5);
 
+    // 搜索字段选择：全部/学号/姓名/...
+    if (ui->comboBox->count() == 0 || ui->comboBox->itemText(0) != QStringLiteral("全部"))
+        ui->comboBox->insertItem(0, QStringLiteral("全部"));
+    ui->comboBox->setCurrentIndex(0);
+    connect(ui->comboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (!m_searchKeyword.isEmpty()) {
+                    m_currentPage = 1;
+                    refreshStudentList();
+                }
+            });
+
     // 初始化表格列
     initStudentTable();
+
+    // 在学生管理菜单中加入“开通学生账号”
+    for (QMenu *menu : menuBar()->findChildren<QMenu *>()) {
+        if (menu->title().contains(QStringLiteral("学生"))) {
+            QAction *accountAction = menu->addAction(QStringLiteral("开通学生账号..."));
+            connect(accountAction, &QAction::triggered,
+                    this, &TeacherMainWindow::createStudentAccountForSelected);
+            break;
+        }
+    }
 
     // 初始化班级列表
     refreshClassList();
@@ -51,79 +90,226 @@ void TeacherMainWindow::initStudentTable()
     ui->tableWidget_students->setEditTriggers(QAbstractItemView::NoEditTriggers);
 }
 
-// 刷新班级列表 - 保证不丢失空班级
+// 刷新班级列表：数据源为 classes 表，空班级在重启后依然保留
 void TeacherMainWindow::refreshClassList()
 {
-    // 1. 先保存当前的班级列表（包括空班级）
-    QStringList currentClasses;
-    for (int i = 1; i < ui->listWidget_classes->count() - 1; i++) {
-        QListWidgetItem* item = ui->listWidget_classes->item(i);
-        if (item && item->text() != "全部学生" && item->text() != "+ 添加班级") {
-            currentClasses.append(item->text());
-        }
+    const QString selected = currentClassFilter();
+    const QStringList names = classNames();
+
+    bool hasUnassigned = false;
+    QSqlQuery unassignedQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    if (unassignedQuery.exec(QStringLiteral(
+            "SELECT COUNT(*) FROM students WHERE class_name IS NULL"))
+        && unassignedQuery.next()) {
+        hasUnassigned = unassignedQuery.value(0).toInt() > 0;
     }
 
-    // 保存当前选中的班级
-    QString selectedClass = "";
-    if (ui->listWidget_classes->currentItem()) {
-        selectedClass = ui->listWidget_classes->currentItem()->text();
-    }
-
-    // 2. 清空列表
+    ui->listWidget_classes->blockSignals(true);
     ui->listWidget_classes->clear();
+    ui->listWidget_classes->addItem(QStringLiteral("全部学生"));
+    for (const QString &name : names)
+        ui->listWidget_classes->addItem(name);
+    if (hasUnassigned)
+        ui->listWidget_classes->addItem(QStringLiteral("未分班"));
+    ui->listWidget_classes->addItem(QStringLiteral("+ 添加班级"));
 
-    // 3. 重新添加"全部学生"
-    ui->listWidget_classes->addItem("全部学生");
-
-    // 4. 从数据库获取有学生的班级
-    QStringList dbClasses;
-    QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-    if (db.isOpen()) {
-        QSqlQuery query(db);
-        if (query.exec("SELECT DISTINCT class_name FROM students WHERE class_name IS NOT NULL AND class_name != '' ORDER BY class_name")) {
-            while (query.next()) {
-                QString className = query.value(0).toString();
-                if (!className.isEmpty()) {
-                    dbClasses.append(className);
-                }
-            }
-        }
-    }
-
-    // 5. 合并：数据库中的班级 + 之前保存的班级（包括空班级）
-    QStringList allClasses = dbClasses; // 先添加有学生的班级
-
-    // 再添加之前存在但现在没学生的班级（去重）
-    foreach (QString className, currentClasses) {
-        if (!allClasses.contains(className)) {
-            allClasses.append(className);
-        }
-    }
-
-    // 6. 排序并添加到列表
-    allClasses.sort();
-    foreach (QString className, allClasses) {
-        ui->listWidget_classes->addItem(className);
-    }
-
-    // 7. 添加"+ 添加班级"
-    ui->listWidget_classes->addItem("+ 添加班级");
-
-    // 8. 恢复选中状态
-    bool found = false;
-    if (!selectedClass.isEmpty() && selectedClass != "+ 添加班级") {
-        for (int i = 0; i < ui->listWidget_classes->count(); i++) {
-            if (ui->listWidget_classes->item(i)->text() == selectedClass) {
-                ui->listWidget_classes->setCurrentRow(i);
-                found = true;
+    int targetRow = 0;
+    if (!selected.isEmpty()) {
+        for (int i = 0; i < ui->listWidget_classes->count(); ++i) {
+            if (ui->listWidget_classes->item(i)->text() == selected) {
+                targetRow = i;
                 break;
             }
         }
     }
+    ui->listWidget_classes->setCurrentRow(targetRow);
+    ui->listWidget_classes->blockSignals(false);
+}
 
-    if (!found) {
-        ui->listWidget_classes->setCurrentRow(0); // 选中"全部学生"
+QString TeacherMainWindow::currentClassFilter() const
+{
+    QListWidgetItem *item = ui->listWidget_classes->currentItem();
+    if (!item)
+        return QString();
+    const QString text = item->text();
+    if (text == QStringLiteral("全部学生") || text == QStringLiteral("+ 添加班级"))
+        return QString();
+    return text;
+}
+
+QStringList TeacherMainWindow::classNames() const
+{
+    QStringList names;
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    if (query.exec(QStringLiteral("SELECT class_name FROM classes ORDER BY class_name"))) {
+        while (query.next())
+            names << query.value(0).toString();
     }
+    return names;
+}
+
+QString TeacherMainWindow::selectedStudentId() const
+{
+    const int row = ui->tableWidget_students->currentRow();
+    if (row < 0)
+        return QString();
+    QTableWidgetItem *item = ui->tableWidget_students->item(row, 0);
+    return item ? item->text().trimmed() : QString();
+}
+
+bool TeacherMainWindow::addClassInteractive()
+{
+    bool ok = false;
+    const QString className = QInputDialog::getText(
+        this, QStringLiteral("添加班级"),
+        QStringLiteral("请输入班级名称（例如：人工智能2404）："),
+        QLineEdit::Normal, QString(), &ok).trimmed();
+    if (!ok || className.isEmpty())
+        return false;
+
+    if (className == QStringLiteral("全部学生") || className == QStringLiteral("未分班")
+        || className == QStringLiteral("+ 添加班级")) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("该名称为系统保留名称"));
+        return false;
+    }
+    if (className.length() > 50) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("班级名称不能超过 50 个字符"));
+        return false;
+    }
+    if (classNames().contains(className)) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("该班级已存在"));
+        return false;
+    }
+
+    int gradeYear = QDate::currentDate().year();
+    static const QRegularExpression yearRe(QStringLiteral("(20\\d{2})"));
+    const QRegularExpressionMatch match = yearRe.match(className);
+    if (match.hasMatch())
+        gradeYear = match.captured(1).toInt();
+
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    query.prepare(QStringLiteral(
+        "INSERT INTO classes (class_name, grade_year) VALUES (?, ?)"));
+    query.addBindValue(className);
+    query.addBindValue(gradeYear);
+    if (!query.exec()) {
+        QMessageBox::critical(this, QStringLiteral("添加失败"), query.lastError().text());
+        return false;
+    }
+
+    refreshClassList();
+    loadClassStudents(className);
+    statusBar()->showMessage(QStringLiteral("班级 %1 添加成功").arg(className));
+    return true;
+}
+
+void TeacherMainWindow::renameClass(const QString &oldName)
+{
+    if (oldName.isEmpty() || oldName == QStringLiteral("全部学生")
+        || oldName == QStringLiteral("未分班") || oldName == QStringLiteral("+ 添加班级")) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("该条目不可重命名"));
+        return;
+    }
+
+    bool ok = false;
+    const QString newName = QInputDialog::getText(
+        this, QStringLiteral("重命名班级"),
+        QStringLiteral("请输入新的班级名称："),
+        QLineEdit::Normal, oldName, &ok).trimmed();
+    if (!ok || newName.isEmpty() || newName == oldName)
+        return;
+
+    if (newName == QStringLiteral("全部学生") || newName == QStringLiteral("未分班")
+        || newName == QStringLiteral("+ 添加班级")) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("该名称为系统保留名称"));
+        return;
+    }
+    if (classNames().contains(newName)) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("该班级名称已存在"));
+        return;
+    }
+
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    query.prepare(QStringLiteral("UPDATE classes SET class_name = ? WHERE class_name = ?"));
+    query.addBindValue(newName);
+    query.addBindValue(oldName);
+    if (!query.exec() || query.numRowsAffected() <= 0) {
+        QMessageBox::critical(this, QStringLiteral("重命名失败"), query.lastError().text());
+        return;
+    }
+
+    refreshClassList();
+    loadClassStudents(newName);
+    statusBar()->showMessage(QStringLiteral("班级已重命名为 %1").arg(newName));
+}
+
+void TeacherMainWindow::createStudentAccountForSelected()
+{
+    const QString studentId = selectedStudentId();
+    if (studentId.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("请先在学生列表中选择一名学生"));
+        return;
+    }
+
+    QString username;
+    QString initialPassword;
+    DatabaseManager *manager = DatabaseManager::instance();
+    if (!manager->createStudentAccount(studentId, username, initialPassword)) {
+        QMessageBox::warning(this, QStringLiteral("开通失败"), manager->lastError());
+        return;
+    }
+
+    QMessageBox::information(
+        this, QStringLiteral("账号已开通"),
+        QStringLiteral("学生 %1 的登录账号已创建：\n\n登录名：%2\n初始密码：%3\n\n"
+                       "首次登录时系统会强制要求修改密码。")
+            .arg(studentId, username, initialPassword));
+}
+
+void TeacherMainWindow::deleteClass(const QString &className)
+{
+    if (className.isEmpty() || className == QStringLiteral("全部学生")
+        || className == QStringLiteral("未分班") || className == QStringLiteral("+ 添加班级")) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("该条目不可删除"));
+        return;
+    }
+
+    int studentCount = 0;
+    QSqlQuery countQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    countQuery.prepare(QStringLiteral(
+        "SELECT COUNT(*) FROM students WHERE class_name = ?"));
+    countQuery.addBindValue(className);
+    if (countQuery.exec() && countQuery.next())
+        studentCount = countQuery.value(0).toInt();
+
+    QMessageBox box(QMessageBox::Question, QStringLiteral("确认删除"),
+                    QStringLiteral("确定要删除班级【%1】吗？").arg(className),
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setInformativeText(QStringLiteral(
+        "班级中的 %1 名学生不会被删除，将变为“未分班”。").arg(studentCount));
+    if (box.exec() != QMessageBox::Yes)
+        return;
+
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    query.prepare(QStringLiteral("DELETE FROM classes WHERE class_name = ?"));
+    query.addBindValue(className);
+    if (!query.exec()) {
+        QMessageBox::critical(this, QStringLiteral("删除失败"), query.lastError().text());
+        return;
+    }
+
+    refreshClassList();
+    m_currentPage = 1;
+    refreshStudentList();
+    statusBar()->showMessage(QStringLiteral("班级 %1 已删除").arg(className));
 }
 
 // 核心：更新分页显示
@@ -193,75 +379,127 @@ void TeacherMainWindow::loadPage(int page)
     qDebug() << "加载第" << page << "页数据";
 }
 
+namespace {
+
+// 构造学生列表的统一筛选条件（班级 + 关键词），供计数与分页查询复用
+QString buildStudentWhere(const QString &className, const QString &keyword,
+                          const QString &field, QVariantList &params)
+{
+    QStringList conditions;
+    if (!className.isEmpty()) {
+        if (className == QStringLiteral("未分班")) {
+            conditions << QStringLiteral("class_name IS NULL");
+        } else {
+            conditions << QStringLiteral("class_name = ?");
+            params << className;
+        }
+    }
+
+    const QString kw = keyword.trimmed();
+    if (!kw.isEmpty()) {
+        const QString like = QStringLiteral("%") + kw + QStringLiteral("%");
+        QString column;
+        if (field == QStringLiteral("学号"))
+            column = QStringLiteral("student_id");
+        else if (field == QStringLiteral("姓名"))
+            column = QStringLiteral("name");
+        else if (field == QStringLiteral("性别"))
+            column = QStringLiteral("gender");
+        else if (field == QStringLiteral("年龄"))
+            column = QStringLiteral("CAST(age AS TEXT)");
+        else if (field == QStringLiteral("班级"))
+            column = QStringLiteral("COALESCE(class_name,'')");
+        else if (field == QStringLiteral("电话"))
+            column = QStringLiteral("COALESCE(phone,'')");
+        else if (field == QStringLiteral("地址"))
+            column = QStringLiteral("COALESCE(address,'')");
+
+        if (!column.isEmpty()) {
+            conditions << QStringLiteral("(%1 LIKE ?)").arg(column);
+            params << like;
+        } else {
+            conditions << QStringLiteral(
+                "(student_id LIKE ? OR name LIKE ? OR COALESCE(class_name,'') LIKE ? "
+                "OR COALESCE(phone,'') LIKE ? OR COALESCE(address,'') LIKE ?)");
+            for (int i = 0; i < 5; ++i)
+                params << like;
+        }
+    }
+
+    return conditions.isEmpty() ? QString()
+                                : QStringLiteral(" WHERE ") + conditions.join(QStringLiteral(" AND "));
+}
+
+} // namespace
+
 // 刷新学生列表
 void TeacherMainWindow::refreshStudentList()
 {
     int totalCount = getTotalStudentCount();
-    int pageSize = 15;  // 每页显示15条
-    m_totalPages = (totalCount + pageSize - 1) / pageSize;  // 计算总页数
+    const int pageSize = 15;
+    m_totalPages = (totalCount + pageSize - 1) / pageSize;
 
-    // 如果当前页超过总页数，重置为最后一页
-    if (m_currentPage > m_totalPages && m_totalPages > 0) {
+    if (m_currentPage > m_totalPages && m_totalPages > 0)
         m_currentPage = m_totalPages;
-    } else if (m_totalPages == 0) {
+    else if (m_totalPages == 0)
         m_currentPage = 1;
-    }
 
-    // 获取当前页数据
-    QList<QMap<QString, QString>> students = getStudentsByPage(m_currentPage, pageSize);
-
-    // 加载到表格
+    const QList<QMap<QString, QString>> students = getStudentsByPage(m_currentPage, pageSize);
     loadDataToTable(students);
-
-    // 更新分页显示
     updatePagination(m_currentPage, m_totalPages);
 
-    // 在函数的最后添加
-    refreshClassList();
-
-    // 如果当前选中的是班级，重新加载该班级学生
-    QListWidgetItem *currentItem = ui->listWidget_classes->currentItem();
-    if (currentItem && currentItem->text() != "全部学生" && currentItem->text() != "+ 添加班级") {
-        loadClassStudents(currentItem->text());
-    }
+    const QString filter = currentClassFilter();
+    QString message = QStringLiteral("共 %1 名学生").arg(totalCount);
+    if (!filter.isEmpty())
+        message += QStringLiteral("（班级：%1）").arg(filter);
+    if (!m_searchKeyword.isEmpty())
+        message += QStringLiteral("，搜索：%1").arg(m_searchKeyword);
+    statusBar()->showMessage(message);
 }
 
-// 获取学生总数
+// 获取学生总数（含班级与关键词筛选）
 int TeacherMainWindow::getTotalStudentCount()
 {
     QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-    if (!db.isOpen()) {
-        qDebug() << "数据库未打开";
+    if (!db.isOpen())
         return 0;
-    }
+
+    QVariantList params;
+    const QString where = buildStudentWhere(currentClassFilter(), m_searchKeyword,
+                                            ui->comboBox->currentText(), params);
 
     QSqlQuery query(db);
-    if (query.exec("SELECT COUNT(*) FROM students")) {
-        if (query.next()) {
-            return query.value(0).toInt();
-        }
-    } else {
-        qDebug() << "查询学生总数失败：" << query.lastError().text();
-    }
+    query.prepare(QStringLiteral("SELECT COUNT(*) FROM students") + where);
+    for (const QVariant &param : params)
+        query.addBindValue(param);
 
+    if (query.exec() && query.next())
+        return query.value(0).toInt();
+
+    qDebug() << "查询学生总数失败：" << query.lastError().text();
     return 0;
 }
 
-// 分页获取学生数据
+// 分页获取学生数据（含班级与关键词筛选）
 QList<QMap<QString, QString>> TeacherMainWindow::getStudentsByPage(int page, int pageSize)
 {
     QList<QMap<QString, QString>> studentList;
-
     QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-    if (!db.isOpen()) {
+    if (!db.isOpen())
         return studentList;
-    }
 
-    int offset = (page - 1) * pageSize;
+    QVariantList params;
+    const QString where = buildStudentWhere(currentClassFilter(), m_searchKeyword,
+                                            ui->comboBox->currentText(), params);
+    const int offset = (page - 1) * pageSize;
 
     QSqlQuery query(db);
-    query.prepare("SELECT student_id, name, gender, age, class_name, phone, address, created_time "
-                  "FROM students ORDER BY created_time DESC LIMIT ? OFFSET ?");
+    query.prepare(QStringLiteral(
+                      "SELECT student_id, name, gender, age, class_name, phone, address, created_time "
+                      "FROM students")
+                  + where + QStringLiteral(" ORDER BY student_id LIMIT ? OFFSET ?"));
+    for (const QVariant &param : params)
+        query.addBindValue(param);
     query.addBindValue(pageSize);
     query.addBindValue(offset);
 
@@ -276,7 +514,6 @@ QList<QMap<QString, QString>> TeacherMainWindow::getStudentsByPage(int page, int
             student["电话"] = query.value("phone").toString();
             student["地址"] = query.value("address").toString();
             student["创建时间"] = query.value("created_time").toString();
-
             studentList.append(student);
         }
     } else {
@@ -286,44 +523,41 @@ QList<QMap<QString, QString>> TeacherMainWindow::getStudentsByPage(int page, int
     return studentList;
 }
 
-// 添加学生到数据库
+// 添加学生到数据库（重复学号由 UNIQUE 约束兜底）
 bool TeacherMainWindow::addStudent(const QString &studentId, const QString &name,
                                    const QString &gender, int age, const QString &className,
                                    const QString &phone, const QString &address)
 {
-    // 验证学号是否已存在
     QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
     if (!db.isOpen()) {
+        QMessageBox::critical(this, QStringLiteral("错误"), QStringLiteral("数据库连接失败"));
         return false;
     }
 
-    QSqlQuery checkQuery(db);
-    checkQuery.prepare("SELECT COUNT(*) FROM students WHERE student_id = ?");
-    checkQuery.addBindValue(studentId);
-
-    if (checkQuery.exec() && checkQuery.next()) {
-        if (checkQuery.value(0).toInt() > 0) {
-            QMessageBox::warning(this, "警告", "学号已存在！");
-            return false;
-        }
-    }
-
-    // 插入新学生
     QSqlQuery query(db);
-    query.prepare("INSERT INTO students (student_id, name, gender, age, class_name, phone, address) "
-                  "VALUES (?, ?, ?, ?, ?, ?, ?)");
-    query.addBindValue(studentId);
-    query.addBindValue(name);
+    query.prepare(QStringLiteral(
+        "INSERT INTO students (student_id, name, gender, age, class_name, phone, address) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"));
+    query.addBindValue(studentId.trimmed());
+    query.addBindValue(name.trimmed());
     query.addBindValue(gender);
     query.addBindValue(age);
-    query.addBindValue(className);
+    query.addBindValue(className.isEmpty() ? QVariant() : QVariant(className));
     query.addBindValue(phone);
     query.addBindValue(address);
 
-    return query.exec();
+    if (!query.exec()) {
+        const QString error = query.lastError().text();
+        QMessageBox::warning(this, QStringLiteral("添加失败"),
+                             error.contains(QStringLiteral("UNIQUE"), Qt::CaseInsensitive)
+                                 ? QStringLiteral("学号 %1 已存在").arg(studentId)
+                                 : error);
+        return false;
+    }
+    return true;
 }
 
-// 更新学生信息
+// 更新学生信息（学号由界面锁定，不在这里修改）
 bool TeacherMainWindow::updateStudent(const QString &oldStudentId, const QString &studentId,
                                       const QString &name, const QString &gender, int age,
                                       const QString &className, const QString &phone,
@@ -331,57 +565,73 @@ bool TeacherMainWindow::updateStudent(const QString &oldStudentId, const QString
 {
     QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
     if (!db.isOpen()) {
+        QMessageBox::critical(this, QStringLiteral("错误"), QStringLiteral("数据库连接失败"));
         return false;
     }
 
-    // 如果学号改变，检查新学号是否已存在
-    if (oldStudentId != studentId) {
-        QSqlQuery checkQuery(db);
-        checkQuery.prepare("SELECT COUNT(*) FROM students WHERE student_id = ?");
-        checkQuery.addBindValue(studentId);
-
-        if (checkQuery.exec() && checkQuery.next()) {
-            if (checkQuery.value(0).toInt() > 0) {
-                QMessageBox::warning(this, "警告", "学号已存在！");
-                return false;
-            }
-        }
-    }
-
     QSqlQuery query(db);
-    query.prepare("UPDATE students SET student_id = ?, name = ?, gender = ?, age = ?, "
-                  "class_name = ?, phone = ?, address = ? WHERE student_id = ?");
-    query.addBindValue(studentId);
-    query.addBindValue(name);
+    query.prepare(QStringLiteral(
+        "UPDATE students SET name = ?, gender = ?, age = ?, class_name = ?, "
+        "phone = ?, address = ? WHERE student_id = ?"));
+    query.addBindValue(name.trimmed());
     query.addBindValue(gender);
     query.addBindValue(age);
-    query.addBindValue(className);
+    query.addBindValue(className.isEmpty() ? QVariant() : QVariant(className));
     query.addBindValue(phone);
     query.addBindValue(address);
     query.addBindValue(oldStudentId);
 
-    return query.exec();
+    if (!query.exec() || query.numRowsAffected() <= 0) {
+        QMessageBox::warning(this, QStringLiteral("更新失败"), query.lastError().text());
+        return false;
+    }
+
+    // 学号是成绩表的外键，界面中保持只读；如未来允许修改，
+    // 数据库的 ON UPDATE CASCADE 会自动同步 grades.student_id。
+    Q_UNUSED(studentId);
+    return true;
 }
 
 bool TeacherMainWindow::deleteStudent(const QString &studentId)
 {
     QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-    if (!db.isOpen()) {
-        qDebug() << "数据库未打开";
+    if (!db.isOpen())
+        return false;
+
+    if (!db.transaction()) {
+        QMessageBox::critical(this, QStringLiteral("错误"),
+                              QStringLiteral("无法开始事务：%1").arg(db.lastError().text()));
+        return false;
+    }
+
+    // 先注销学生账号（若有），再由外键级联删除成绩
+    QSqlQuery accountQuery(db);
+    accountQuery.prepare(QStringLiteral(
+        "DELETE FROM users WHERE user_id = "
+        "(SELECT user_id FROM students WHERE student_id = ?) AND user_type = 'student'"));
+    accountQuery.addBindValue(studentId);
+    if (!accountQuery.exec()) {
+        db.rollback();
+        QMessageBox::critical(this, QStringLiteral("删除失败"), accountQuery.lastError().text());
         return false;
     }
 
     QSqlQuery query(db);
-    query.prepare("DELETE FROM students WHERE student_id = ?");
+    query.prepare(QStringLiteral("DELETE FROM students WHERE student_id = ?"));
     query.addBindValue(studentId);
-
-    bool success = query.exec();
-
-    if (!success) {
-        qDebug() << "删除学生失败：" << query.lastError().text();
+    if (!query.exec() || query.numRowsAffected() <= 0) {
+        db.rollback();
+        QMessageBox::critical(this, QStringLiteral("删除失败"), query.lastError().text());
+        return false;
     }
 
-    return success;
+    if (!db.commit()) {
+        const QString error = db.lastError().text();
+        db.rollback();
+        QMessageBox::critical(this, QStringLiteral("删除失败"), error);
+        return false;
+    }
+    return true;
 }
 
 // 加载数据到表格
@@ -407,278 +657,182 @@ void TeacherMainWindow::loadDataToTable(const QList<QMap<QString, QString>> &stu
     ui->tableWidget_students->resizeColumnsToContents();
 }
 
-// 加载指定班级的学生
+// 选中指定班级并刷新（班级视图与全部学生共用分页逻辑）
 void TeacherMainWindow::loadClassStudents(const QString &className)
 {
-    QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-    if (!db.isOpen()) {
-        return;
-    }
-
-    QSqlQuery query(db);
-    query.prepare("SELECT student_id, name, gender, age, class_name, phone, address, created_time "
-                  "FROM students WHERE class_name = ? ORDER BY created_time DESC");
-    query.addBindValue(className);
-
-    QList<QMap<QString, QString>> studentList;
-
-    if (query.exec()) {
-        while (query.next()) {
-            QMap<QString, QString> student;
-            student["学号"] = query.value("student_id").toString();
-            student["姓名"] = query.value("name").toString();
-            student["性别"] = query.value("gender").toString();
-            student["年龄"] = query.value("age").toString();
-            student["班级"] = query.value("class_name").toString();
-            student["电话"] = query.value("phone").toString();
-            student["地址"] = query.value("address").toString();
-            student["创建时间"] = query.value("created_time").toString();
-
-            studentList.append(student);
+    for (int i = 0; i < ui->listWidget_classes->count(); ++i) {
+        if (ui->listWidget_classes->item(i)->text() == className) {
+            ui->listWidget_classes->setCurrentRow(i);
+            break;
         }
     }
-
-    // 加载到表格
-    loadDataToTable(studentList);
-
-    // 更新分页显示（班级视图不分页或按需实现）
-    ui->label_pageInfo->setText(QString("班级：%1（共%2人）").arg(className).arg(studentList.size()));
-    ui->pushButton_prev->setEnabled(false);
-    ui->pushButton_next->setEnabled(false);
-
-    // 隐藏页码按钮（班级视图不分页）
-    for (QPushButton *btn : std::as_const(m_pageButtons)) {
-        btn->setVisible(false);
-    }
-
-    ui->pushButton_ellipsis->setVisible(false);
+    m_currentPage = 1;
+    refreshStudentList();
 }
 
 
 void TeacherMainWindow::manageSubjects()
 {
-    // 创建一个对话框显示所有学科
     QDialog dialog(this);
-    dialog.setWindowTitle("学科管理");
-    dialog.resize(600, 400);
+    dialog.setWindowTitle(QStringLiteral("课程管理"));
+    dialog.resize(680, 430);
 
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *hint = new QLabel(QStringLiteral("仅显示当前教师负责的课程"), &dialog);
+    hint->setStyleSheet(QStringLiteral("color:#6b7280;"));
+    layout->addWidget(hint);
 
-    // 创建表格显示学科
-    QTableWidget *table = new QTableWidget(&dialog);
-    table->setColumnCount(4); // 修改为4列
-    table->setHorizontalHeaderLabels(QStringList() << "学科编号" << "学科名称"
-                                                   << "学分" << "创建时间"); // 移除"描述"列
-
-    // 加载学科数据
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (db.isOpen()) {
-        QSqlQuery query(db);
-        if (query.exec("SELECT subject_id, subject_name, credit, "
-                       "created_time FROM subjects ORDER BY subject_id")) { // 移除description字段
-            int row = 0;
-            while (query.next()) {
-                table->insertRow(row);
-                for (int col = 0; col < 4; col++) { // 修改为4列
-                    QTableWidgetItem *item = new QTableWidgetItem(query.value(col).toString());
-                    table->setItem(row, col, item);
-                }
-                row++;
-            }
-        }
-    }
-
+    auto *table = new QTableWidget(&dialog);
+    table->setColumnCount(4);
+    table->setHorizontalHeaderLabels(QStringList()
+        << QStringLiteral("课程编号") << QStringLiteral("课程名称")
+        << QStringLiteral("学分") << QStringLiteral("创建时间"));
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->setAlternatingRowColors(true);
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setStretchLastSection(true);
     layout->addWidget(table);
 
-    // 添加按钮
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *addButton = new QPushButton("添加学科", &dialog);
-    QPushButton *editButton = new QPushButton("编辑学科", &dialog);
-    QPushButton *deleteButton = new QPushButton("删除学科", &dialog);
-    QPushButton *closeButton = new QPushButton("关闭", &dialog);
+    auto load = [&]() {
+        table->setRowCount(0);
+        QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+        query.prepare(QStringLiteral(
+            "SELECT subject_id, subject_name, credit, created_time "
+            "FROM subjects WHERE teacher_id = ? ORDER BY subject_id"));
+        query.addBindValue(m_teacherId);
+        if (!query.exec()) {
+            QMessageBox::critical(&dialog, QStringLiteral("查询失败"),
+                                  query.lastError().text());
+            return;
+        }
+        int row = 0;
+        while (query.next()) {
+            table->insertRow(row);
+            table->setItem(row, 0, new QTableWidgetItem(query.value(0).toString()));
+            table->setItem(row, 1, new QTableWidgetItem(query.value(1).toString()));
+            table->setItem(row, 2, new QTableWidgetItem(
+                QString::number(query.value(2).toDouble(), 'f', 1)));
+            table->setItem(row, 3, new QTableWidgetItem(query.value(3).toString()));
+            ++row;
+        }
+    };
 
+    auto *buttonLayout = new QHBoxLayout();
+    auto *addButton = new QPushButton(QStringLiteral("添加课程"), &dialog);
+    auto *editButton = new QPushButton(QStringLiteral("编辑课程"), &dialog);
+    auto *deleteButton = new QPushButton(QStringLiteral("删除课程"), &dialog);
+    auto *closeButton = new QPushButton(QStringLiteral("关闭"), &dialog);
     buttonLayout->addWidget(addButton);
     buttonLayout->addWidget(editButton);
     buttonLayout->addWidget(deleteButton);
     buttonLayout->addStretch();
     buttonLayout->addWidget(closeButton);
-
     layout->addLayout(buttonLayout);
 
-    // 连接信号槽
     connect(addButton, &QPushButton::clicked, [&]() {
-        dialog.done(QDialog::Accepted);
-        addSubject();
+        SubjectDialog subjectDialog(m_teacherId, SubjectDialog::AddMode, &dialog);
+        if (subjectDialog.exec() == QDialog::Accepted)
+            load();
     });
 
     connect(editButton, &QPushButton::clicked, [&]() {
-        int row = table->currentRow();
-        if (row >= 0) {
-            QString subjectId = table->item(row, 0)->text();
-            dialog.done(QDialog::Accepted);
-
-            // 编辑学科 - 使用正确的构造函数
-            SubjectDialog editDialog(m_teacherId, subjectId, this);
-            if (editDialog.exec() == QDialog::Accepted) {
-                manageSubjects(); // 刷新显示
-            }
-        } else {
-            QMessageBox::warning(&dialog, "警告", "请先选择一个学科！");
+        const int row = table->currentRow();
+        if (row < 0) {
+            QMessageBox::warning(&dialog, QStringLiteral("警告"),
+                                 QStringLiteral("请先选择一门课程"));
+            return;
         }
+        const QString subjectId = table->item(row, 0)->text();
+        SubjectDialog subjectDialog(m_teacherId, subjectId, &dialog);
+        if (subjectDialog.exec() == QDialog::Accepted)
+            load();
     });
 
     connect(deleteButton, &QPushButton::clicked, [&]() {
-        int row = table->currentRow();
-        if (row >= 0) {
-            QString subjectId = table->item(row, 0)->text();
-            QString subjectName = table->item(row, 1)->text();
-
-            QMessageBox::StandardButton reply;
-            reply = QMessageBox::question(&dialog, "确认删除",
-                                          QString("确定要删除学科【%1 - %2】吗？\n"
-                                                  "（同时会删除所有相关成绩记录）")
-                                              .arg(subjectId).arg(subjectName),
-                                          QMessageBox::Yes | QMessageBox::No);
-
-            if (reply == QMessageBox::Yes) {
-                DatabaseManager* dbManager = DatabaseManager::instance();
-                QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-                if (db.isOpen()) {
-                    QSqlQuery query(db);
-
-                    // 先删除相关成绩
-                    query.prepare("DELETE FROM grades WHERE subject_id = ?");
-                    query.addBindValue(subjectId);
-                    query.exec();
-
-                    // 再删除学科
-                    query.prepare("DELETE FROM subjects WHERE subject_id = ?");
-                    query.addBindValue(subjectId);
-
-                    if (query.exec()) {
-                        table->removeRow(row);
-                        QMessageBox::information(&dialog, "成功", "学科删除成功！");
-                    }
-                }
-            }
-        } else {
-            QMessageBox::warning(&dialog, "警告", "请先选择一个学科！");
+        const int row = table->currentRow();
+        if (row < 0) {
+            QMessageBox::warning(&dialog, QStringLiteral("警告"),
+                                 QStringLiteral("请先选择一门课程"));
+            return;
         }
+        const QString subjectId = table->item(row, 0)->text();
+        const QString subjectName = table->item(row, 1)->text();
+
+        QSqlQuery countQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+        countQuery.prepare(QStringLiteral("SELECT COUNT(*) FROM grades WHERE subject_id = ?"));
+        countQuery.addBindValue(subjectId);
+        int gradeCount = 0;
+        if (countQuery.exec() && countQuery.next())
+            gradeCount = countQuery.value(0).toInt();
+
+        QMessageBox box(QMessageBox::Question, QStringLiteral("确认删除"),
+                        QStringLiteral("确定要删除课程【%1 - %2】吗？").arg(subjectId, subjectName),
+                        QMessageBox::Yes | QMessageBox::No, &dialog);
+        box.setInformativeText(QStringLiteral(
+            "该课程下已有 %1 条成绩记录，删除课程会一并删除这些成绩，且不可撤销。")
+                                   .arg(gradeCount));
+        if (box.exec() != QMessageBox::Yes)
+            return;
+
+        QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
+        if (!db.transaction()) {
+            QMessageBox::critical(&dialog, QStringLiteral("错误"),
+                                  QStringLiteral("无法开始事务"));
+            return;
+        }
+        QSqlQuery deleteGrades(db);
+        deleteGrades.prepare(QStringLiteral("DELETE FROM grades WHERE subject_id = ?"));
+        deleteGrades.addBindValue(subjectId);
+        if (!deleteGrades.exec()) {
+            db.rollback();
+            QMessageBox::critical(&dialog, QStringLiteral("删除失败"),
+                                  deleteGrades.lastError().text());
+            return;
+        }
+        QSqlQuery deleteSubject(db);
+        deleteSubject.prepare(QStringLiteral(
+            "DELETE FROM subjects WHERE subject_id = ? AND teacher_id = ?"));
+        deleteSubject.addBindValue(subjectId);
+        deleteSubject.addBindValue(m_teacherId);
+        if (!deleteSubject.exec() || deleteSubject.numRowsAffected() <= 0) {
+            db.rollback();
+            QMessageBox::critical(&dialog, QStringLiteral("删除失败"),
+                                  deleteSubject.lastError().text());
+            return;
+        }
+        if (!db.commit()) {
+            db.rollback();
+            QMessageBox::critical(&dialog, QStringLiteral("删除失败"), db.lastError().text());
+            return;
+        }
+        load();
+        QMessageBox::information(&dialog, QStringLiteral("成功"),
+                                 QStringLiteral("课程删除成功"));
     });
 
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
 
+    load();
     dialog.exec();
 }
 
 void TeacherMainWindow::addSubject()
 {
     SubjectDialog dialog(m_teacherId, SubjectDialog::AddMode, this);
-    if (dialog.exec() == QDialog::Accepted) {
-        // 刷新可能需要的地方
-    }
+    if (dialog.exec() == QDialog::Accepted)
+        statusBar()->showMessage(QStringLiteral("课程添加成功"));
 }
 
 void TeacherMainWindow::editSubject()
 {
-    // 让用户选择要编辑的学科
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (!db.isOpen()) return;
-
-    QSqlQuery query(db);
-    if (query.exec("SELECT subject_id, subject_name FROM subjects ORDER BY subject_id")) {
-        QStringList items;
-        QMap<QString, QString> subjectMap;
-
-        while (query.next()) {
-            QString id = query.value(0).toString();
-            QString name = query.value(1).toString();
-            items << QString("%1 - %2").arg(id).arg(name);
-            subjectMap[items.last()] = id;
-        }
-
-        if (items.isEmpty()) {
-            QMessageBox::information(this, "提示", "没有学科可编辑！");
-            return;
-        }
-
-        bool ok;
-        QString selected = QInputDialog::getItem(this, "选择学科",
-                                                 "请选择要编辑的学科:",
-                                                 items, 0, false, &ok);
-
-        if (ok && !selected.isEmpty()) {
-            QString subjectId = subjectMap[selected];
-            SubjectDialog dialog(m_teacherId, subjectId, this);
-            dialog.exec();
-        }
-    }
+    manageSubjects();
 }
 
 void TeacherMainWindow::deleteSubject()
 {
-    // 类似 editSubject，让用户选择然后删除
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (!db.isOpen()) return;
-
-    QSqlQuery query(db);
-    if (query.exec("SELECT subject_id, subject_name FROM subjects ORDER BY subject_id")) {
-        QStringList items;
-        QMap<QString, QString> subjectMap;
-
-        while (query.next()) {
-            QString id = query.value(0).toString();
-            QString name = query.value(1).toString();
-            items << QString("%1 - %2").arg(id).arg(name);
-            subjectMap[items.last()] = id;
-        }
-
-        if (items.isEmpty()) {
-            QMessageBox::information(this, "提示", "没有学科可删除！");
-            return;
-        }
-
-        bool ok;
-        QString selected = QInputDialog::getItem(this, "删除学科",
-                                                 "请选择要删除的学科:",
-                                                 items, 0, false, &ok);
-
-        if (ok && !selected.isEmpty()) {
-            QString subjectId = subjectMap[selected];
-            QString subjectName = selected.split(" - ")[1];
-
-            QMessageBox::StandardButton reply;
-            reply = QMessageBox::question(this, "确认删除",
-                                          QString("确定要删除学科【%1】吗？\n"
-                                                  "（同时会删除所有相关成绩记录）")
-                                              .arg(selected),
-                                          QMessageBox::Yes | QMessageBox::No);
-
-            if (reply == QMessageBox::Yes) {
-                QSqlQuery deleteQuery(db);
-
-                // 先删除相关成绩
-                deleteQuery.prepare("DELETE FROM grades WHERE subject_id = ?");
-                deleteQuery.addBindValue(subjectId);
-                deleteQuery.exec();
-
-                // 再删除学科
-                deleteQuery.prepare("DELETE FROM subjects WHERE subject_id = ?");
-                deleteQuery.addBindValue(subjectId);
-
-                if (deleteQuery.exec()) {
-                    QMessageBox::information(this, "成功", "学科删除成功！");
-                }
-            }
-        }
-    }
+    manageSubjects();
 }
 
 void TeacherMainWindow::inputGrade()
@@ -689,969 +843,826 @@ void TeacherMainWindow::inputGrade()
 
 void TeacherMainWindow::modifyGrade()
 {
-    // 创建对话框让用户选择要修改的成绩
     QDialog dialog(this);
-    dialog.setWindowTitle("选择要修改的成绩");
-    dialog.resize(500, 400);
+    dialog.setWindowTitle(QStringLiteral("成绩管理"));
+    dialog.resize(940, 580);
 
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *filterLayout = new QHBoxLayout();
+    auto *classCombo = new QComboBox(&dialog);
+    auto *subjectCombo = new QComboBox(&dialog);
+    auto *semesterCombo = new QComboBox(&dialog);
+    auto *filterButton = new QPushButton(QStringLiteral("筛选"), &dialog);
 
-    // 添加过滤器
-    QHBoxLayout *filterLayout = new QHBoxLayout();
-    QComboBox *classCombo = new QComboBox(&dialog);
-    QComboBox *subjectCombo = new QComboBox(&dialog);
-    QComboBox *semesterCombo = new QComboBox(&dialog);
-    QPushButton *filterButton = new QPushButton("筛选", &dialog);
+    classCombo->addItem(QStringLiteral("全部班级"), QString());
+    subjectCombo->addItem(QStringLiteral("全部课程"), QString());
+    semesterCombo->addItem(QStringLiteral("全部学期"), QString());
 
-    classCombo->addItem("全部班级", "");
-    subjectCombo->addItem("全部学科", "");
-    semesterCombo->addItem("全部学期", "");
+    QSqlQuery classQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    if (classQuery.exec(QStringLiteral("SELECT class_name FROM classes ORDER BY class_name"))) {
+        while (classQuery.next())
+            classCombo->addItem(classQuery.value(0).toString(), classQuery.value(0).toString());
+    }
 
-    filterLayout->addWidget(new QLabel("班级:", &dialog));
+    QSqlQuery subjectQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    subjectQuery.prepare(QStringLiteral(
+        "SELECT subject_id, subject_name FROM subjects WHERE teacher_id = ? ORDER BY subject_id"));
+    subjectQuery.addBindValue(m_teacherId);
+    if (subjectQuery.exec()) {
+        while (subjectQuery.next()) {
+            subjectCombo->addItem(subjectQuery.value(1).toString(),
+                                  subjectQuery.value(0).toString());
+        }
+    }
+
+    QSqlQuery semesterQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    semesterQuery.prepare(QStringLiteral(
+        "SELECT DISTINCT g.semester FROM grades g "
+        "JOIN subjects sub ON sub.subject_id = g.subject_id "
+        "WHERE sub.teacher_id = ? ORDER BY g.semester DESC"));
+    semesterQuery.addBindValue(m_teacherId);
+    if (semesterQuery.exec()) {
+        while (semesterQuery.next())
+            semesterCombo->addItem(semesterQuery.value(0).toString(),
+                                   semesterQuery.value(0).toString());
+    }
+
+    filterLayout->addWidget(new QLabel(QStringLiteral("班级："), &dialog));
     filterLayout->addWidget(classCombo);
-    filterLayout->addWidget(new QLabel("学科:", &dialog));
+    filterLayout->addWidget(new QLabel(QStringLiteral("课程："), &dialog));
     filterLayout->addWidget(subjectCombo);
-    filterLayout->addWidget(new QLabel("学期:", &dialog));
+    filterLayout->addWidget(new QLabel(QStringLiteral("学期："), &dialog));
     filterLayout->addWidget(semesterCombo);
     filterLayout->addWidget(filterButton);
     filterLayout->addStretch();
-
     layout->addLayout(filterLayout);
 
-    // 创建表格
-    QTableWidget *table = new QTableWidget(&dialog);
+    auto *table = new QTableWidget(&dialog);
     table->setColumnCount(7);
-    table->setHorizontalHeaderLabels(QStringList() << "学生学号" << "学生姓名"
-                                                   << "学科" << "成绩" << "学分" << "学期" << "考试日期");
-
+    table->setHorizontalHeaderLabels(QStringList()
+        << QStringLiteral("学号") << QStringLiteral("姓名") << QStringLiteral("班级")
+        << QStringLiteral("课程") << QStringLiteral("学期") << QStringLiteral("成绩")
+        << QStringLiteral("考试日期"));
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->setAlternatingRowColors(true);
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setStretchLastSection(true);
     layout->addWidget(table);
 
-    // 加载数据
     auto loadGrades = [&]() {
         table->setRowCount(0);
-
-        DatabaseManager* dbManager = DatabaseManager::instance();
-        QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-        if (!db.isOpen()) return;
-
-        QString sql = "SELECT s.student_id, s.name, sub.subject_name, "
-                      "g.score, sub.credit, g.semester, g.exam_date "
-                      "FROM grades g "
-                      "JOIN students s ON g.student_id = s.student_id "
-                      "JOIN subjects sub ON g.subject_id = sub.subject_id "
-                      "WHERE 1=1";
-
-        QStringList conditions;
+        QString sql = QStringLiteral(
+            "SELECT g.student_id, s.name, COALESCE(s.class_name,'未分班'), "
+            "sub.subject_name, g.semester, g.score, COALESCE(g.exam_date,''), g.subject_id "
+            "FROM grades g "
+            "JOIN students s ON s.student_id = g.student_id "
+            "JOIN subjects sub ON sub.subject_id = g.subject_id "
+            "WHERE sub.teacher_id = ?");
         QVariantList params;
+        params << m_teacherId;
 
-        QString selectedClass = classCombo->currentData().toString();
-        if (!selectedClass.isEmpty()) {
-            sql += " AND s.class_name = ?";
-            params << selectedClass;
+        if (!classCombo->currentData().toString().isEmpty()) {
+            sql += QStringLiteral(" AND s.class_name = ?");
+            params << classCombo->currentData().toString();
         }
-
-        QString selectedSubject = subjectCombo->currentData().toString();
-        if (!selectedSubject.isEmpty()) {
-            sql += " AND g.subject_id = ?";
-            params << selectedSubject;
+        if (!subjectCombo->currentData().toString().isEmpty()) {
+            sql += QStringLiteral(" AND g.subject_id = ?");
+            params << subjectCombo->currentData().toString();
         }
-
-        QString selectedSemester = semesterCombo->currentData().toString();
-        if (!selectedSemester.isEmpty()) {
-            sql += " AND g.semester = ?";
-            params << selectedSemester;
+        if (!semesterCombo->currentData().toString().isEmpty()) {
+            sql += QStringLiteral(" AND g.semester = ?");
+            params << semesterCombo->currentData().toString();
         }
+        sql += QStringLiteral(" ORDER BY g.semester DESC, s.student_id, g.subject_id LIMIT 1000");
 
-        sql += " ORDER BY g.semester DESC, g.subject_id, s.student_id";
-
-        QSqlQuery query(db);
+        QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
         query.prepare(sql);
-
-        for (int i = 0; i < params.size(); i++) {
-            query.addBindValue(params[i]);
+        for (const QVariant &param : params)
+            query.addBindValue(param);
+        if (!query.exec()) {
+            QMessageBox::critical(&dialog, QStringLiteral("查询失败"), query.lastError().text());
+            return;
         }
 
-        if (query.exec()) {
-            int row = 0;
-            while (query.next()) {
-                table->insertRow(row);
-                for (int col = 0; col < 7; col++) {
-                    QTableWidgetItem *item = new QTableWidgetItem(query.value(col).toString());
-                    table->setItem(row, col, item);
+        int row = 0;
+        while (query.next()) {
+            table->insertRow(row);
+            for (int col = 0; col < 7; ++col) {
+                QString text = query.value(col).toString();
+                if (col == 5)
+                    text = QString::number(query.value(5).toDouble(), 'f', 1);
+                auto *item = new QTableWidgetItem(text);
+                if (col == 5) {
+                    const double score = query.value(5).toDouble();
+                    if (score < 60)
+                        item->setForeground(QBrush(QColor(QStringLiteral("#dc2626"))));
+                    item->setTextAlignment(Qt::AlignCenter);
                 }
-                row++;
+                table->setItem(row, col, item);
             }
+            // 隐藏列数据：课程 ID，便于精确编辑；学期已在第 4 列
+            table->item(row, 3)->setData(Qt::UserRole, query.value(7).toString());
+            ++row;
         }
     };
 
-    // 加载筛选条件
-    auto loadFilters = [&]() {
-        DatabaseManager* dbManager = DatabaseManager::instance();
-        QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-        if (!db.isOpen()) return;
-
-        // 加载班级
-        QSqlQuery classQuery(db);
-        if (classQuery.exec("SELECT DISTINCT class_name FROM students "
-                            "WHERE class_name IS NOT NULL AND class_name != ''")) {
-            while (classQuery.next()) {
-                QString className = classQuery.value(0).toString();
-                classCombo->addItem(className, className);
-            }
-        }
-
-        // 加载学科
-        QSqlQuery subjectQuery(db);
-        if (subjectQuery.exec("SELECT subject_id, subject_name FROM subjects")) {
-            while (subjectQuery.next()) {
-                QString subjectId = subjectQuery.value(0).toString();
-                QString subjectName = subjectQuery.value(1).toString();
-                subjectCombo->addItem(subjectName, subjectId);
-            }
-        }
-
-        // 加载学期
-        QSqlQuery semesterQuery(db);
-        if (semesterQuery.exec("SELECT DISTINCT semester FROM grades ORDER BY semester DESC")) {
-            while (semesterQuery.next()) {
-                QString semester = semesterQuery.value(0).toString();
-                semesterCombo->addItem(semester, semester);
-            }
-        }
-    };
-
-    // 按钮
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *editButton = new QPushButton("编辑选中成绩", &dialog);
-    QPushButton *deleteButton = new QPushButton("删除选中成绩", &dialog);
-    QPushButton *closeButton = new QPushButton("关闭", &dialog);
-
+    auto *buttonLayout = new QHBoxLayout();
+    auto *editButton = new QPushButton(QStringLiteral("编辑选中成绩"), &dialog);
+    auto *deleteButton = new QPushButton(QStringLiteral("删除选中成绩"), &dialog);
+    auto *closeButton = new QPushButton(QStringLiteral("关闭"), &dialog);
     buttonLayout->addWidget(editButton);
     buttonLayout->addWidget(deleteButton);
     buttonLayout->addStretch();
     buttonLayout->addWidget(closeButton);
-
     layout->addLayout(buttonLayout);
 
-    // 连接信号槽
-    connect(filterButton, &QPushButton::clicked, loadGrades);
-    connect(editButton, &QPushButton::clicked, [&]() {
-        int row = table->currentRow();
-        if (row >= 0) {
-            QString studentId = table->item(row, 0)->text();
-            QString subjectName = table->item(row, 2)->text();
-            QString semester = table->item(row, 5)->text();
+    connect(filterButton, &QPushButton::clicked, &dialog, loadGrades);
+    connect(classCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, [&](int) { loadGrades(); });
+    connect(subjectCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, [&](int) { loadGrades(); });
+    connect(semesterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, [&](int) { loadGrades(); });
 
-            // 获取学科ID
-            DatabaseManager* dbManager = DatabaseManager::instance();
-            QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-            QSqlQuery query(db);
-            query.prepare("SELECT subject_id FROM subjects WHERE subject_name = ?");
-            query.addBindValue(subjectName);
-
-            if (query.exec() && query.next()) {
-                QString subjectId = query.value(0).toString();
-                dialog.done(QDialog::Accepted);
-
-                GradeDialog gradeDialog(m_teacherId, studentId, subjectId, semester, this);
-                if (gradeDialog.exec() == QDialog::Accepted) {
-                    // 刷新表格
-                    loadGrades();
-                }
-            }
-        } else {
-            QMessageBox::warning(&dialog, "警告", "请先选择一条成绩记录！");
+    connect(editButton, &QPushButton::clicked, &dialog, [&]() {
+        const int row = table->currentRow();
+        if (row < 0) {
+            QMessageBox::warning(&dialog, QStringLiteral("警告"),
+                                 QStringLiteral("请先选择一条成绩记录"));
+            return;
         }
+        const QString studentId = table->item(row, 0)->text();
+        const QString subjectId = table->item(row, 3)->data(Qt::UserRole).toString();
+        const QString semester = table->item(row, 4)->text();
+        GradeDialog gradeDialog(m_teacherId, studentId, subjectId, semester, &dialog);
+        if (gradeDialog.exec() == QDialog::Accepted)
+            loadGrades();
     });
 
-    connect(deleteButton, &QPushButton::clicked, [&]() {
-        int row = table->currentRow();
-        if (row >= 0) {
-            QString studentId = table->item(row, 0)->text();
-            QString studentName = table->item(row, 1)->text();
-            QString subjectName = table->item(row, 2)->text();
-            QString semester = table->item(row, 5)->text();
-
-            QMessageBox::StandardButton reply;
-            reply = QMessageBox::question(&dialog, "确认删除",
-                                          QString("确定要删除【%1 - %2】的【%3】成绩吗？")
-                                              .arg(studentId).arg(studentName).arg(subjectName),
-                                          QMessageBox::Yes | QMessageBox::No);
-
-            if (reply == QMessageBox::Yes) {
-                DatabaseManager* dbManager = DatabaseManager::instance();
-                QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-                // 获取学科ID
-                QSqlQuery query(db);
-                query.prepare("SELECT subject_id FROM subjects WHERE subject_name = ?");
-                query.addBindValue(subjectName);
-
-                if (query.exec() && query.next()) {
-                    QString subjectId = query.value(0).toString();
-
-                    QSqlQuery deleteQuery(db);
-                    deleteQuery.prepare("DELETE FROM grades WHERE student_id = ? AND "
-                                        "subject_id = ? AND semester = ?");
-                    deleteQuery.addBindValue(studentId);
-                    deleteQuery.addBindValue(subjectId);
-                    deleteQuery.addBindValue(semester);
-
-                    if (deleteQuery.exec()) {
-                        table->removeRow(row);
-                        QMessageBox::information(&dialog, "成功", "成绩删除成功！");
-                    }
-                }
-            }
-        } else {
-            QMessageBox::warning(&dialog, "警告", "请先选择一条成绩记录！");
+    connect(deleteButton, &QPushButton::clicked, &dialog, [&]() {
+        const int row = table->currentRow();
+        if (row < 0) {
+            QMessageBox::warning(&dialog, QStringLiteral("警告"),
+                                 QStringLiteral("请先选择一条成绩记录"));
+            return;
         }
+        const QString studentId = table->item(row, 0)->text();
+        const QString studentName = table->item(row, 1)->text();
+        const QString subjectId = table->item(row, 3)->data(Qt::UserRole).toString();
+        const QString semester = table->item(row, 4)->text();
+
+        if (QMessageBox::question(&dialog, QStringLiteral("确认删除"),
+                                  QStringLiteral("确定删除【%1 - %2】的该条成绩吗？")
+                                      .arg(studentId, studentName),
+                                  QMessageBox::Yes | QMessageBox::No)
+            != QMessageBox::Yes) {
+            return;
+        }
+
+        QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+        query.prepare(QStringLiteral(
+            "DELETE FROM grades WHERE student_id = ? AND subject_id = ? AND semester = ?"));
+        query.addBindValue(studentId);
+        query.addBindValue(subjectId);
+        query.addBindValue(semester);
+        if (!query.exec() || query.numRowsAffected() <= 0) {
+            QMessageBox::critical(&dialog, QStringLiteral("删除失败"), query.lastError().text());
+            return;
+        }
+        loadGrades();
+        QMessageBox::information(&dialog, QStringLiteral("成功"), QStringLiteral("成绩删除成功"));
     });
 
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
 
-    // 加载数据
-    loadFilters();
     loadGrades();
-
     dialog.exec();
 }
 
 void TeacherMainWindow::viewGrade()
 {
-    // 极简版本，只显示数据
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (!db.isOpen()) {
-        QMessageBox::warning(this, "错误", "数据库未连接");
-        return;
-    }
-
     QDialog dialog(this);
-    dialog.setWindowTitle("成绩查看");
-    dialog.resize(600, 400);
+    dialog.setWindowTitle(QStringLiteral("成绩查询"));
+    dialog.resize(980, 580);
 
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-    // 简单查询
-    QSqlQuery query(db);
-    bool success = query.exec("SELECT s.student_id, s.name, s.class_name, "
-                              "sub.subject_name, g.score, g.exam_date "
-                              "FROM grades g "
-                              "JOIN students s ON g.student_id = s.student_id "
-                              "JOIN subjects sub ON g.subject_id = sub.subject_id "
-                              "LIMIT 100");  // 限制100条，避免数据太多
-
-    if (!success) {
-        QMessageBox::warning(&dialog, "错误", "查询失败：" + query.lastError().text());
-        return;
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *filterLayout = new QHBoxLayout();
+    auto *semesterCombo = new QComboBox(&dialog);
+    semesterCombo->addItem(QStringLiteral("全部学期"), QString());
+    QSqlQuery semesterQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    semesterQuery.prepare(QStringLiteral(
+        "SELECT DISTINCT g.semester FROM grades g "
+        "JOIN subjects sub ON sub.subject_id = g.subject_id "
+        "WHERE sub.teacher_id = ? ORDER BY g.semester DESC"));
+    semesterQuery.addBindValue(m_teacherId);
+    if (semesterQuery.exec()) {
+        while (semesterQuery.next())
+            semesterCombo->addItem(semesterQuery.value(0).toString(),
+                                   semesterQuery.value(0).toString());
     }
+    filterLayout->addWidget(new QLabel(QStringLiteral("学期："), &dialog));
+    filterLayout->addWidget(semesterCombo);
+    filterLayout->addStretch();
+    layout->addLayout(filterLayout);
 
-    QTableWidget *table = new QTableWidget(&dialog);
-    table->setColumnCount(6);
-    table->setHorizontalHeaderLabels(QStringList() << "学号" << "姓名" << "班级" << "学科" << "成绩" << "考试日期");
-
-    int row = 0;
-    while (query.next()) {
-        table->insertRow(row);
-        for (int col = 0; col < 6; col++) {
-            table->setItem(row, col, new QTableWidgetItem(query.value(col).toString()));
-        }
-        row++;
-    }
-
+    auto *table = new QTableWidget(&dialog);
+    table->setColumnCount(8);
+    table->setHorizontalHeaderLabels(QStringList()
+        << QStringLiteral("学期") << QStringLiteral("学号") << QStringLiteral("姓名")
+        << QStringLiteral("班级") << QStringLiteral("课程") << QStringLiteral("成绩")
+        << QStringLiteral("等级") << QStringLiteral("任课教师"));
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setAlternatingRowColors(true);
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setStretchLastSection(true);
     layout->addWidget(table);
 
-    QPushButton *closeBtn = new QPushButton("关闭", &dialog);
-    layout->addWidget(closeBtn);
+    auto *hint = new QLabel(QStringLiteral("最多显示 1000 条记录，可按学期筛选"), &dialog);
+    hint->setStyleSheet(QStringLiteral("color:#6b7280;"));
+    layout->addWidget(hint);
 
-    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    auto load = [&]() {
+        table->setRowCount(0);
+        QString sql = QStringLiteral(
+            "SELECT semester, student_id, student_name, COALESCE(class_name,'未分班'), "
+            "subject_name, score, grade_level, teacher_name "
+            "FROM v_student_grades WHERE subject_id IN "
+            "(SELECT subject_id FROM subjects WHERE teacher_id = ?)");
+        QVariantList params;
+        params << m_teacherId;
+        if (!semesterCombo->currentData().toString().isEmpty()) {
+            sql += QStringLiteral(" AND semester = ?");
+            params << semesterCombo->currentData().toString();
+        }
+        sql += QStringLiteral(" ORDER BY semester DESC, class_name, student_id, subject_id LIMIT 1000");
 
-    dialog.exec();
-}
-
-
-void TeacherMainWindow::exportClassGPAReport()
-{
-    // 选择班级
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (!db.isOpen()) return;
-
-    QSqlQuery query(db);
-    query.exec("SELECT DISTINCT class_name FROM students "
-               "WHERE class_name IS NOT NULL AND class_name != '' "
-               "ORDER BY class_name");
-
-    QStringList classList;
-    while (query.next()) {
-        classList << query.value(0).toString();
-    }
-
-    if (classList.isEmpty()) {
-        QMessageBox::information(this, "提示", "没有班级数据！");
-        return;
-    }
-
-    bool ok;
-    QString className = QInputDialog::getItem(this, "选择班级",
-                                              "请选择班级:", classList, 0, false, &ok);
-
-    if (!ok || className.isEmpty()) return;
-
-    // 查询班级绩点排名
-    query.prepare(
-        "SELECT s.student_id, s.name, "
-        "AVG(g.score) as avg_score, "
-        "SUM(sub.credit) as total_credit, "
-        "AVG(CASE "
-        "WHEN g.score >= 90 THEN 4.0 "
-        "WHEN g.score >= 80 THEN 3.0 "
-        "WHEN g.score >= 70 THEN 2.0 "
-        "WHEN g.score >= 60 THEN 1.0 "
-        "ELSE 0.0 END) as gpa, "
-        "RANK() OVER (ORDER BY AVG(CASE "
-        "WHEN g.score >= 90 THEN 4.0 "
-        "WHEN g.score >= 80 THEN 3.0 "
-        "WHEN g.score >= 70 THEN 2.0 "
-        "WHEN g.score >= 60 THEN 1.0 "
-        "ELSE 0.0 END) DESC) as ranking "
-        "FROM grades g "
-        "JOIN students s ON g.student_id = s.student_id "
-        "JOIN subjects sub ON g.subject_id = sub.subject_id "
-        "WHERE s.class_name = ? "
-        "GROUP BY s.student_id, s.name "
-        "ORDER BY gpa DESC"
-        );
-    query.addBindValue(className);
-
-    // 显示结果对话框
-    QDialog dialog(this);
-    dialog.setWindowTitle(QString("班级绩点排名 - %1").arg(className));
-    dialog.resize(700, 500);
-
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-    QLabel *titleLabel = new QLabel(QString("<h2>%1 班级绩点排名</h2>").arg(className), &dialog);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(titleLabel);
-
-    QTableWidget *table = new QTableWidget(&dialog);
-    table->setColumnCount(6);
-    table->setHorizontalHeaderLabels(QStringList() << "排名" << "学号" << "姓名"
-                                                   << "平均成绩" << "总学分" << "平均绩点");
-
-    if (query.exec()) {
+        QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+        query.prepare(sql);
+        for (const QVariant &param : params)
+            query.addBindValue(param);
+        if (!query.exec()) {
+            QMessageBox::critical(&dialog, QStringLiteral("查询失败"), query.lastError().text());
+            return;
+        }
         int row = 0;
         while (query.next()) {
             table->insertRow(row);
-            for (int col = 0; col < 6; col++) {
-                QString text;
-                if (col == 0) text = QString::number(query.value(5).toInt()); // 排名
-                else if (col == 1) text = query.value(0).toString(); // 学号
-                else if (col == 2) text = query.value(1).toString(); // 姓名
-                else if (col == 3) text = QString::number(query.value(2).toDouble(), 'f', 2); // 平均成绩
-                else if (col == 4) text = QString::number(query.value(3).toDouble(), 'f', 1); // 总学分
-                else if (col == 5) text = QString::number(query.value(4).toDouble(), 'f', 2); // 绩点
-
-                QTableWidgetItem *item = new QTableWidgetItem(text);
-                if (col == 0) { // 排名列特殊处理
-                    int rank = query.value(5).toInt();
-                    item->setForeground(QBrush(rank <= 3 ? Qt::red : Qt::black));
-                    QFont font = item->font();
-                    font.setBold(rank <= 3);
-                    item->setFont(font);
+            for (int col = 0; col < 8; ++col) {
+                QString text = query.value(col).toString();
+                if (col == 5)
+                    text = QString::number(query.value(5).toDouble(), 'f', 1);
+                auto *item = new QTableWidgetItem(text);
+                if (col == 5) {
+                    const double score = query.value(5).toDouble();
+                    if (score < 60)
+                        item->setForeground(QBrush(QColor(QStringLiteral("#dc2626"))));
+                    item->setTextAlignment(Qt::AlignCenter);
                 }
                 table->setItem(row, col, item);
             }
-            row++;
+            ++row;
         }
+    };
+
+    auto *buttonLayout = new QHBoxLayout();
+    auto *exportButton = new QPushButton(QStringLiteral("导出 CSV"), &dialog);
+    auto *closeButton = new QPushButton(QStringLiteral("关闭"), &dialog);
+    buttonLayout->addWidget(exportButton);
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(closeButton);
+    layout->addLayout(buttonLayout);
+
+    connect(semesterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, [&](int) { load(); });
+    connect(exportButton, &QPushButton::clicked, &dialog, [&]() {
+        exportTableToCsv(table, QStringLiteral("成绩查询"));
+    });
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    load();
+    dialog.exec();
+}
+
+void TeacherMainWindow::exportTableToCsv(QTableWidget *table, const QString &defaultName)
+{
+    if (!table || table->rowCount() == 0) {
+        QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("没有可导出的数据"));
+        return;
     }
 
+    QString filePath = QFileDialog::getSaveFileName(
+        this, QStringLiteral("导出 CSV"),
+        QDir::homePath() + QStringLiteral("/") + defaultName + QStringLiteral(".csv"),
+        QStringLiteral("CSV 文件 (*.csv)"));
+    if (filePath.isEmpty())
+        return;
+    if (!filePath.endsWith(QStringLiteral(".csv"), Qt::CaseInsensitive))
+        filePath += QStringLiteral(".csv");
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, QStringLiteral("导出失败"), file.errorString());
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << QChar(0xFEFF); // UTF-8 BOM，Excel 打开不乱码
+
+    auto csvField = [](QString value) {
+        value.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+        return QStringLiteral("\"") + value + QStringLiteral("\"");
+    };
+
+    QStringList headers;
+    for (int col = 0; col < table->columnCount(); ++col) {
+        QTableWidgetItem *item = table->horizontalHeaderItem(col);
+        headers << csvField(item ? item->text() : QString::number(col + 1));
+    }
+    out << headers.join(QLatin1Char(',')) << '\n';
+
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QStringList fields;
+        for (int col = 0; col < table->columnCount(); ++col) {
+            QTableWidgetItem *item = table->item(row, col);
+            fields << csvField(item ? item->text() : QString());
+        }
+        out << fields.join(QLatin1Char(',')) << '\n';
+    }
+    out.flush();
+    file.close();
+
+    QMessageBox::information(this, QStringLiteral("导出成功"),
+                             QStringLiteral("已导出到：\n%1").arg(filePath));
+}
+
+void TeacherMainWindow::printTable(QTableWidget *table, const QString &title)
+{
+    if (!table || table->rowCount() == 0) {
+        QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("没有可打印的数据"));
+        return;
+    }
+
+    QPrinter printer(QPrinter::HighResolution);
+    QPrintDialog dialog(&printer, this);
+    dialog.setWindowTitle(QStringLiteral("打印报表"));
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QString html = QStringLiteral("<h2>%1</h2>").arg(Validation::escapeHtml(title));
+    html += QStringLiteral("<table border='1' cellspacing='0' cellpadding='4' width='100%'><tr>");
+    for (int col = 0; col < table->columnCount(); ++col) {
+        QTableWidgetItem *item = table->horizontalHeaderItem(col);
+        html += QStringLiteral("<th>%1</th>")
+                    .arg(Validation::escapeHtml(item ? item->text() : QString()));
+    }
+    html += QStringLiteral("</tr>");
+    for (int row = 0; row < table->rowCount(); ++row) {
+        html += QStringLiteral("<tr>");
+        for (int col = 0; col < table->columnCount(); ++col) {
+            QTableWidgetItem *item = table->item(row, col);
+            html += QStringLiteral("<td>%1</td>")
+                        .arg(Validation::escapeHtml(item ? item->text() : QString()));
+        }
+        html += QStringLiteral("</tr>");
+    }
+    html += QStringLiteral("</table>");
+
+    QTextDocument document;
+    document.setHtml(html);
+    document.print(&printer);
+}
+
+void TeacherMainWindow::showReportDialog(const QString &title, const QStringList &headers,
+                                         const QList<QStringList> &rows, const QString &csvName,
+                                         const QString &summary)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(title);
+    dialog.resize(900, 580);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *titleLabel = new QLabel(QStringLiteral("<h2>%1</h2>").arg(Validation::escapeHtml(title)),
+                                  &dialog);
+    titleLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(titleLabel);
+
+    if (!summary.isEmpty()) {
+        auto *summaryLabel = new QLabel(summary, &dialog);
+        summaryLabel->setAlignment(Qt::AlignCenter);
+        summaryLabel->setStyleSheet(QStringLiteral("color:#475569;"));
+        layout->addWidget(summaryLabel);
+    }
+
+    auto *table = new QTableWidget(&dialog);
+    table->setColumnCount(headers.size());
+    table->setHorizontalHeaderLabels(headers);
+    table->setRowCount(rows.size());
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setAlternatingRowColors(true);
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setStretchLastSection(true);
+
+    QList<int> rankColumns;
+    QList<int> scoreColumns;
+    for (int i = 0; i < headers.size(); ++i) {
+        if (headers.at(i).contains(QStringLiteral("排名")))
+            rankColumns << i;
+        if (headers.at(i).contains(QStringLiteral("成绩")) || headers.at(i).contains(QStringLiteral("平均分")))
+            scoreColumns << i;
+    }
+
+    for (int row = 0; row < rows.size(); ++row) {
+        const QStringList &values = rows.at(row);
+        for (int col = 0; col < headers.size() && col < values.size(); ++col) {
+            auto *item = new QTableWidgetItem(values.at(col));
+            item->setTextAlignment(Qt::AlignCenter);
+            if (rankColumns.contains(col)) {
+                const int rank = values.at(col).toInt();
+                if (rank <= 3)
+                    item->setForeground(QBrush(QColor(QStringLiteral("#dc2626"))));
+                QFont font = item->font();
+                font.setBold(rank <= 3);
+                item->setFont(font);
+            }
+            if (scoreColumns.contains(col)) {
+                const double score = values.at(col).toDouble();
+                if (score < 60)
+                    item->setForeground(QBrush(QColor(QStringLiteral("#dc2626"))));
+                else if (score >= 90)
+                    item->setForeground(QBrush(QColor(QStringLiteral("#15803d"))));
+            }
+            table->setItem(row, col, item);
+        }
+    }
+    table->resizeColumnsToContents();
     layout->addWidget(table);
 
-    QPushButton *exportButton = new QPushButton("导出Excel", &dialog);
-    QPushButton *printButton = new QPushButton("打印", &dialog);
-    QPushButton *closeButton = new QPushButton("关闭", &dialog);
-
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    auto *buttonLayout = new QHBoxLayout();
+    auto *exportButton = new QPushButton(QStringLiteral("导出 CSV"), &dialog);
+    auto *printButton = new QPushButton(QStringLiteral("打印"), &dialog);
+    auto *closeButton = new QPushButton(QStringLiteral("关闭"), &dialog);
     buttonLayout->addWidget(exportButton);
     buttonLayout->addWidget(printButton);
     buttonLayout->addStretch();
     buttonLayout->addWidget(closeButton);
-
     layout->addLayout(buttonLayout);
 
-    connect(exportButton, &QPushButton::clicked, [&]() {
-        // 导出Excel
-        QString fileName = QFileDialog::getSaveFileName(&dialog, "保存报表",
-                                                        QDir::homePath() + QString("/%1_绩点排名.xlsx").arg(className),
-                                                        "Excel文件 (*.xlsx)");
-        if (!fileName.isEmpty()) {
-            // 实现导出逻辑
-            QMessageBox::information(&dialog, "提示", "导出功能正在开发中...");
-        }
+    connect(exportButton, &QPushButton::clicked, &dialog, [&]() {
+        exportTableToCsv(table, csvName);
     });
-
-    connect(printButton, &QPushButton::clicked, [&]() {
-        // 打印功能
-        QMessageBox::information(&dialog, "提示", "打印功能正在开发中...");
+    connect(printButton, &QPushButton::clicked, &dialog, [&]() {
+        printTable(table, title);
     });
-
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
 
     dialog.exec();
+}
+
+void TeacherMainWindow::exportClassGPAReport()
+{
+    const QStringList classes = classNames();
+    if (classes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("没有班级数据"));
+        return;
+    }
+
+    bool ok = false;
+    const QString className = QInputDialog::getItem(
+        this, QStringLiteral("选择班级"), QStringLiteral("请选择班级："),
+        classes, 0, false, &ok);
+    if (!ok || className.isEmpty())
+        return;
+
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    query.prepare(QStringLiteral(
+        "SELECT class_rank, student_id, name, weighted_avg, total_credit, gpa "
+        "FROM v_student_overview WHERE class_name = ? AND subject_count > 0 "
+        "ORDER BY gpa DESC, student_id"));
+    query.addBindValue(className);
+    if (!query.exec()) {
+        QMessageBox::critical(this, QStringLiteral("查询失败"), query.lastError().text());
+        return;
+    }
+
+    QList<QStringList> rows;
+    double gpaSum = 0.0;
+    while (query.next()) {
+        rows << QStringList{
+            query.value(0).toString(),
+            query.value(1).toString(),
+            query.value(2).toString(),
+            QString::number(query.value(3).toDouble(), 'f', 2),
+            QString::number(query.value(4).toDouble(), 'f', 1),
+            QString::number(query.value(5).toDouble(), 'f', 3),
+        };
+        gpaSum += query.value(5).toDouble();
+    }
+
+    if (rows.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("该班级暂无成绩数据"));
+        return;
+    }
+
+    const QString summary = QStringLiteral("班级：%1　人数：%2　平均 GPA：%3")
+                                .arg(className)
+                                .arg(rows.size())
+                                .arg(gpaSum / rows.size(), 0, 'f', 3);
+    showReportDialog(QStringLiteral("班级绩点排名 - %1").arg(className),
+                     QStringList() << QStringLiteral("班级排名") << QStringLiteral("学号")
+                                   << QStringLiteral("姓名") << QStringLiteral("加权平均分")
+                                   << QStringLiteral("总学分") << QStringLiteral("GPA"),
+                     rows, className + QStringLiteral("_绩点排名"), summary);
 }
 
 void TeacherMainWindow::exportAllStudentsGPAReport()
 {
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (!db.isOpen()) return;
-
-    QSqlQuery query(db);
-    query.exec(
-        "SELECT s.student_id, s.name, s.class_name, "
-        "AVG(g.score) as avg_score, "
-        "SUM(sub.credit) as total_credit, "
-        "AVG(CASE "
-        "WHEN g.score >= 90 THEN 4.0 "
-        "WHEN g.score >= 80 THEN 3.0 "
-        "WHEN g.score >= 70 THEN 2.0 "
-        "WHEN g.score >= 60 THEN 1.0 "
-        "ELSE 0.0 END) as gpa, "
-        "RANK() OVER (ORDER BY AVG(CASE "
-        "WHEN g.score >= 90 THEN 4.0 "
-        "WHEN g.score >= 80 THEN 3.0 "
-        "WHEN g.score >= 70 THEN 2.0 "
-        "WHEN g.score >= 60 THEN 1.0 "
-        "ELSE 0.0 END) DESC) as ranking "
-        "FROM grades g "
-        "JOIN students s ON g.student_id = s.student_id "
-        "JOIN subjects sub ON g.subject_id = sub.subject_id "
-        "GROUP BY s.student_id, s.name, s.class_name "
-        "ORDER BY gpa DESC"
-        );
-
-    // 显示所有学生绩点排名
-    QDialog dialog(this);
-    dialog.setWindowTitle("所有学生绩点排名");
-    dialog.resize(800, 600);
-
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-    QLabel *titleLabel = new QLabel("<h2>所有学生绩点排名</h2>", &dialog);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(titleLabel);
-
-    QTableWidget *table = new QTableWidget(&dialog);
-    table->setColumnCount(7);
-    table->setHorizontalHeaderLabels(QStringList() << "排名" << "学号" << "姓名"
-                                                   << "班级" << "平均成绩" << "总学分" << "平均绩点");
-
-    if (query.exec()) {
-        int row = 0;
-        while (query.next()) {
-            table->insertRow(row);
-            for (int col = 0; col < 7; col++) {
-                QString text;
-                if (col == 0) text = QString::number(query.value(6).toInt());
-                else if (col == 1) text = query.value(0).toString();
-                else if (col == 2) text = query.value(1).toString();
-                else if (col == 3) text = query.value(2).toString();
-                else if (col == 4) text = QString::number(query.value(3).toDouble(), 'f', 2);
-                else if (col == 5) text = QString::number(query.value(4).toDouble(), 'f', 1);
-                else if (col == 6) text = QString::number(query.value(5).toDouble(), 'f', 2);
-
-                QTableWidgetItem *item = new QTableWidgetItem(text);
-                if (col == 0) {
-                    int rank = query.value(6).toInt();
-                    item->setForeground(QBrush(rank <= 10 ? Qt::red : Qt::black));
-                    QFont font = item->font();
-                    font.setBold(rank <= 10);
-                    item->setFont(font);
-                }
-                table->setItem(row, col, item);
-            }
-            row++;
-        }
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    if (!query.exec(QStringLiteral(
+            "SELECT grade_rank, class_rank, student_id, name, "
+            "COALESCE(class_name,'未分班'), weighted_avg, total_credit, gpa "
+            "FROM v_student_overview WHERE subject_count > 0 "
+            "ORDER BY gpa DESC, student_id"))) {
+        QMessageBox::critical(this, QStringLiteral("查询失败"), query.lastError().text());
+        return;
     }
 
-    layout->addWidget(table);
-
-    // 统计信息
-    QGroupBox *statsBox = new QGroupBox("统计信息", &dialog);
-    QGridLayout *statsLayout = new QGridLayout(statsBox);
-
-    // 计算统计数据
-    int totalStudents = table->rowCount();
-    double avgGPA = 0;
-    double maxGPA = 0;
-    double minGPA = 5.0;
-
-    for (int i = 0; i < totalStudents; i++) {
-        double gpa = table->item(i, 6)->text().toDouble();
-        avgGPA += gpa;
-        if (gpa > maxGPA) maxGPA = gpa;
-        if (gpa < minGPA) minGPA = gpa;
+    QList<QStringList> rows;
+    double gpaSum = 0.0;
+    while (query.next()) {
+        rows << QStringList{
+            query.value(0).toString(),
+            query.value(1).toString(),
+            query.value(2).toString(),
+            query.value(3).toString(),
+            query.value(4).toString(),
+            QString::number(query.value(5).toDouble(), 'f', 2),
+            QString::number(query.value(6).toDouble(), 'f', 1),
+            QString::number(query.value(7).toDouble(), 'f', 3),
+        };
+        gpaSum += query.value(7).toDouble();
     }
 
-    if (totalStudents > 0) avgGPA /= totalStudents;
+    if (rows.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("暂无成绩数据"));
+        return;
+    }
 
-    statsLayout->addWidget(new QLabel("学生总数:", statsBox), 0, 0);
-    statsLayout->addWidget(new QLabel(QString::number(totalStudents), statsBox), 0, 1);
-    statsLayout->addWidget(new QLabel("平均绩点:", statsBox), 0, 2);
-    statsLayout->addWidget(new QLabel(QString::number(avgGPA, 'f', 2), statsBox), 0, 3);
-    statsLayout->addWidget(new QLabel("最高绩点:", statsBox), 1, 0);
-    statsLayout->addWidget(new QLabel(QString::number(maxGPA, 'f', 2), statsBox), 1, 1);
-    statsLayout->addWidget(new QLabel("最低绩点:", statsBox), 1, 2);
-    statsLayout->addWidget(new QLabel(QString::number(minGPA, 'f', 2), statsBox), 1, 3);
-
-    layout->addWidget(statsBox);
-
-    // 按钮
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *exportButton = new QPushButton("导出Excel", &dialog);
-    QPushButton *printButton = new QPushButton("打印", &dialog);
-    QPushButton *closeButton = new QPushButton("关闭", &dialog);
-
-    buttonLayout->addWidget(exportButton);
-    buttonLayout->addWidget(printButton);
-    buttonLayout->addStretch();
-    buttonLayout->addWidget(closeButton);
-
-    layout->addLayout(buttonLayout);
-
-    connect(exportButton, &QPushButton::clicked, [&]() {
-        QString fileName = QFileDialog::getSaveFileName(&dialog, "保存报表",
-                                                        QDir::homePath() + "/所有学生绩点排名.xlsx",
-                                                        "Excel文件 (*.xlsx)");
-        if (!fileName.isEmpty()) {
-            QMessageBox::information(&dialog, "提示", "导出功能正在开发中...");
-        }
-    });
-
-    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
-
-    dialog.exec();
+    const QString summary = QStringLiteral("学生数：%1　平均 GPA：%2")
+                                .arg(rows.size())
+                                .arg(gpaSum / rows.size(), 0, 'f', 3);
+    showReportDialog(QStringLiteral("所有学生绩点排名"),
+                     QStringList() << QStringLiteral("年级排名") << QStringLiteral("班级排名")
+                                   << QStringLiteral("学号") << QStringLiteral("姓名")
+                                   << QStringLiteral("班级") << QStringLiteral("加权平均分")
+                                   << QStringLiteral("总学分") << QStringLiteral("GPA"),
+                     rows, QStringLiteral("所有学生绩点排名"), summary);
 }
 
 void TeacherMainWindow::exportSubjectClassReport()
 {
-    // 选择学科和班级
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (!db.isOpen()) return;
-
-    // 获取所有学科
-    QSqlQuery subjectQuery(db);
-    subjectQuery.exec("SELECT subject_id, subject_name FROM subjects ORDER BY subject_id");
-
-    QStringList subjectList;
+    QSqlQuery subjectQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    subjectQuery.prepare(QStringLiteral(
+        "SELECT subject_id, subject_name FROM subjects WHERE teacher_id = ? ORDER BY subject_id"));
+    subjectQuery.addBindValue(m_teacherId);
+    QStringList subjectItems;
     QMap<QString, QString> subjectMap;
-    while (subjectQuery.next()) {
-        QString subjectId = subjectQuery.value(0).toString();
-        QString subjectName = subjectQuery.value(1).toString();
-        QString displayText = QString("%1 - %2").arg(subjectId).arg(subjectName);
-        subjectList << displayText;
-        subjectMap[displayText] = subjectId;
+    if (subjectQuery.exec()) {
+        while (subjectQuery.next()) {
+            const QString text = QStringLiteral("%1 - %2")
+                                     .arg(subjectQuery.value(0).toString(),
+                                          subjectQuery.value(1).toString());
+            subjectItems << text;
+            subjectMap[text] = subjectQuery.value(0).toString();
+        }
     }
-
-    if (subjectList.isEmpty()) {
-        QMessageBox::information(this, "提示", "没有学科数据！");
+    if (subjectItems.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("当前教师还没有课程"));
         return;
     }
 
-    // 获取所有班级
-    QSqlQuery classQuery(db);
-    classQuery.exec("SELECT DISTINCT class_name FROM students "
-                    "WHERE class_name IS NOT NULL AND class_name != '' "
-                    "ORDER BY class_name");
+    bool ok = false;
+    const QString subjectText = QInputDialog::getItem(
+        this, QStringLiteral("选择课程"), QStringLiteral("请选择课程："),
+        subjectItems, 0, false, &ok);
+    if (!ok || subjectText.isEmpty())
+        return;
+    const QString subjectId = subjectMap.value(subjectText);
 
-    QStringList classList;
-    while (classQuery.next()) {
-        classList << classQuery.value(0).toString();
-    }
-
-    if (classList.isEmpty()) {
-        QMessageBox::information(this, "提示", "没有班级数据！");
+    const QStringList classes = classNames();
+    if (classes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("没有班级数据"));
         return;
     }
+    const QString className = QInputDialog::getItem(
+        this, QStringLiteral("选择班级"), QStringLiteral("请选择班级："),
+        classes, 0, false, &ok);
+    if (!ok || className.isEmpty())
+        return;
 
-    // 选择对话框
-    QDialog selectDialog(this);
-    selectDialog.setWindowTitle("选择学科和班级");
-    selectDialog.resize(400, 200);
+    QStringList semesters;
+    semesters << QStringLiteral("全部学期");
+    QSqlQuery semesterQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    semesterQuery.prepare(QStringLiteral(
+        "SELECT DISTINCT semester FROM grades WHERE subject_id = ? ORDER BY semester DESC"));
+    semesterQuery.addBindValue(subjectId);
+    if (semesterQuery.exec()) {
+        while (semesterQuery.next())
+            semesters << semesterQuery.value(0).toString();
+    }
+    const QString semesterChoice = QInputDialog::getItem(
+        this, QStringLiteral("选择学期"), QStringLiteral("请选择学期："),
+        semesters, 0, false, &ok);
+    if (!ok)
+        return;
+    const QString semester = (semesterChoice == QStringLiteral("全部学期"))
+                                 ? QString()
+                                 : semesterChoice;
 
-    QVBoxLayout *selectLayout = new QVBoxLayout(&selectDialog);
-
-    selectLayout->addWidget(new QLabel("选择学科:"));
-    QComboBox *subjectCombo = new QComboBox(&selectDialog);
-    subjectCombo->addItems(subjectList);
-    selectLayout->addWidget(subjectCombo);
-
-    selectLayout->addWidget(new QLabel("选择班级:"));
-    QComboBox *classCombo = new QComboBox(&selectDialog);
-    classCombo->addItems(classList);
-    selectLayout->addWidget(classCombo);
-
-    // 选择学期（可选）
-    selectLayout->addWidget(new QLabel("选择学期（可选）:"));
-    QLineEdit *semesterEdit = new QLineEdit(&selectDialog);
-    semesterEdit->setPlaceholderText("留空表示所有学期");
-    selectLayout->addWidget(semesterEdit);
-
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *okButton = new QPushButton("确定", &selectDialog);
-    QPushButton *cancelButton = new QPushButton("取消", &selectDialog);
-
-    buttonLayout->addStretch();
-    buttonLayout->addWidget(okButton);
-    buttonLayout->addWidget(cancelButton);
-    selectLayout->addLayout(buttonLayout);
-
-    QString selectedSubjectId;
-    QString selectedClassName;
-    QString selectedSemester;
-
-    connect(okButton, &QPushButton::clicked, [&]() {
-        selectedSubjectId = subjectMap[subjectCombo->currentText()];
-        selectedClassName = classCombo->currentText();
-        selectedSemester = semesterEdit->text().trimmed();
-        selectDialog.accept();
-    });
-
-    connect(cancelButton, &QPushButton::clicked, &selectDialog, &QDialog::reject);
-
-    if (selectDialog.exec() != QDialog::Accepted) return;
-
-    // 查询单科班级成绩排名
-    QSqlQuery query(db);
-    QString sql =
-        "SELECT s.student_id, s.name, g.score, "
-        "RANK() OVER (ORDER BY g.score DESC) as ranking "
-        "FROM grades g "
-        "JOIN students s ON g.student_id = s.student_id "
-        "WHERE g.subject_id = ? AND s.class_name = ?";
-
+    QString sql = QStringLiteral(
+        "SELECT RANK() OVER (ORDER BY score DESC) AS ranking, "
+        "student_id, student_name, score, grade_level "
+        "FROM v_student_grades WHERE subject_id = ? AND class_name = ?");
     QVariantList params;
-    params << selectedSubjectId << selectedClassName;
-
-    if (!selectedSemester.isEmpty()) {
-        sql += " AND g.semester = ?";
-        params << selectedSemester;
+    params << subjectId << className;
+    if (!semester.isEmpty()) {
+        sql += QStringLiteral(" AND semester = ?");
+        params << semester;
     }
+    sql += QStringLiteral(" ORDER BY score DESC, student_id");
 
-    sql += " ORDER BY g.score DESC";
-
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
     query.prepare(sql);
-    for (const QVariant &param : params) {
+    for (const QVariant &param : params)
         query.addBindValue(param);
+    if (!query.exec()) {
+        QMessageBox::critical(this, QStringLiteral("查询失败"), query.lastError().text());
+        return;
     }
 
-    // 获取学科名称
-    QString subjectName;
-    QSqlQuery nameQuery(db);
-    nameQuery.prepare("SELECT subject_name FROM subjects WHERE subject_id = ?");
-    nameQuery.addBindValue(selectedSubjectId);
-    if (nameQuery.exec() && nameQuery.next()) {
-        subjectName = nameQuery.value(0).toString();
-    }
-
-    // 显示结果
-    QDialog resultDialog(this);
-    resultDialog.setWindowTitle(QString("%1 - %2 成绩排名").arg(selectedClassName).arg(subjectName));
-    resultDialog.resize(600, 400);
-
-    QVBoxLayout *resultLayout = new QVBoxLayout(&resultDialog);
-
-    QString titleText = QString("<h2>%1 班级 %2 成绩排名</h2>")
-                            .arg(selectedClassName).arg(subjectName);
-    if (!selectedSemester.isEmpty()) {
-        titleText += QString("<h3>学期：%1</h3>").arg(selectedSemester);
-    }
-
-    QLabel *titleLabel = new QLabel(titleText, &resultDialog);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    resultLayout->addWidget(titleLabel);
-
-    QTableWidget *table = new QTableWidget(&resultDialog);
-    table->setColumnCount(4);
-    table->setHorizontalHeaderLabels(QStringList() << "排名" << "学号" << "姓名" << "成绩");
-
-    if (query.exec()) {
-        int row = 0;
-        while (query.next()) {
-            table->insertRow(row);
-            for (int col = 0; col < 4; col++) {
-                QString text;
-                if (col == 0) text = QString::number(query.value(3).toInt());
-                else if (col == 1) text = query.value(0).toString();
-                else if (col == 2) text = query.value(1).toString();
-                else if (col == 3) text = QString::number(query.value(2).toDouble(), 'f', 2);
-
-                QTableWidgetItem *item = new QTableWidgetItem(text);
-                if (col == 0) {
-                    int rank = query.value(3).toInt();
-                    item->setForeground(QBrush(rank <= 3 ? Qt::red : Qt::black));
-                    QFont font = item->font();
-                    font.setBold(rank <= 3);
-                    item->setFont(font);
-                } else if (col == 3) {
-                    double score = query.value(2).toDouble();
-                    if (score >= 90) item->setForeground(QBrush(Qt::darkGreen));
-                    else if (score >= 80) item->setForeground(QBrush(Qt::blue));
-                    else if (score >= 60) item->setForeground(QBrush(Qt::black));
-                    else item->setForeground(QBrush(Qt::red));
-                }
-                table->setItem(row, col, item);
-            }
-            row++;
-        }
-    }
-
-    resultLayout->addWidget(table);
-
-    // 统计信息
-    int totalStudents = table->rowCount();
-    double avgScore = 0;
-    double maxScore = 0;
-    double minScore = 100;
+    QList<QStringList> rows;
+    double sum = 0.0;
+    double maxScore = 0.0;
+    double minScore = 100.0;
     int passCount = 0;
-
-    for (int i = 0; i < totalStudents; i++) {
-        double score = table->item(i, 3)->text().toDouble();
-        avgScore += score;
-        if (score > maxScore) maxScore = score;
-        if (score < minScore) minScore = score;
-        if (score >= 60) passCount++;
+    while (query.next()) {
+        const double score = query.value(3).toDouble();
+        rows << QStringList{query.value(0).toString(), query.value(1).toString(),
+                            query.value(2).toString(),
+                            QString::number(score, 'f', 1), query.value(4).toString()};
+        sum += score;
+        maxScore = qMax(maxScore, score);
+        minScore = qMin(minScore, score);
+        if (score >= 60)
+            ++passCount;
     }
 
-    if (totalStudents > 0) avgScore /= totalStudents;
-    double passRate = totalStudents > 0 ? (passCount * 100.0 / totalStudents) : 0;
+    if (rows.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("该条件下没有成绩记录"));
+        return;
+    }
 
-    QGroupBox *statsBox = new QGroupBox("统计信息", &resultDialog);
-    QGridLayout *statsLayout = new QGridLayout(statsBox);
+    const double avg = sum / rows.size();
+    const QString summary = QStringLiteral(
+        "课程：%1　班级：%2　学期：%3　人数：%4　平均分：%5　最高：%6　最低：%7　及格率：%8%")
+                                .arg(subjectText, className,
+                                     semester.isEmpty() ? QStringLiteral("全部") : semester)
+                                .arg(rows.size())
+                                .arg(avg, 0, 'f', 2)
+                                .arg(maxScore, 0, 'f', 1)
+                                .arg(minScore, 0, 'f', 1)
+                                .arg(100.0 * passCount / rows.size(), 0, 'f', 1);
 
-    statsLayout->addWidget(new QLabel("参考人数:", statsBox), 0, 0);
-    statsLayout->addWidget(new QLabel(QString::number(totalStudents), statsBox), 0, 1);
-    statsLayout->addWidget(new QLabel("平均分:", statsBox), 0, 2);
-    statsLayout->addWidget(new QLabel(QString::number(avgScore, 'f', 2), statsBox), 0, 3);
-    statsLayout->addWidget(new QLabel("最高分:", statsBox), 1, 0);
-    statsLayout->addWidget(new QLabel(QString::number(maxScore, 'f', 2), statsBox), 1, 1);
-    statsLayout->addWidget(new QLabel("最低分:", statsBox), 1, 2);
-    statsLayout->addWidget(new QLabel(QString::number(minScore, 'f', 2), statsBox), 1, 3);
-    statsLayout->addWidget(new QLabel("及格人数:", statsBox), 2, 0);
-    statsLayout->addWidget(new QLabel(QString::number(passCount), statsBox), 2, 1);
-    statsLayout->addWidget(new QLabel("及格率:", statsBox), 2, 2);
-    statsLayout->addWidget(new QLabel(QString::number(passRate, 'f', 1) + "%", statsBox), 2, 3);
-
-    resultLayout->addWidget(statsBox);
-
-    // 按钮
-    QHBoxLayout *resultButtonLayout = new QHBoxLayout();
-    QPushButton *exportButton = new QPushButton("导出Excel", &resultDialog);
-    QPushButton *closeButton = new QPushButton("关闭", &resultDialog);
-
-    resultButtonLayout->addWidget(exportButton);
-    resultButtonLayout->addStretch();
-    resultButtonLayout->addWidget(closeButton);
-
-    resultLayout->addLayout(resultButtonLayout);
-
-    connect(exportButton, &QPushButton::clicked, [&]() {
-        QString fileName = QFileDialog::getSaveFileName(&resultDialog, "保存报表",
-                                                        QDir::homePath() +
-                                                            QString("/%1_%2_成绩排名.xlsx")
-                                                                .arg(selectedClassName).arg(subjectName),
-                                                        "Excel文件 (*.xlsx)");
-        if (!fileName.isEmpty()) {
-            QMessageBox::information(&resultDialog, "提示", "导出功能正在开发中...");
-        }
-    });
-
-    connect(closeButton, &QPushButton::clicked, &resultDialog, &QDialog::accept);
-
-    resultDialog.exec();
+    showReportDialog(QStringLiteral("%1 - %2 成绩排名").arg(className, subjectText),
+                     QStringList() << QStringLiteral("排名") << QStringLiteral("学号")
+                                   << QStringLiteral("姓名") << QStringLiteral("成绩")
+                                   << QStringLiteral("等级"),
+                     rows, QStringLiteral("%1_%2_成绩排名").arg(className, subjectText), summary);
 }
 
 void TeacherMainWindow::exportSubjectAllReport()
 {
-    // 选择学科
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QSqlDatabase db = dbManager->getTeacherDatabase(m_teacherId);
-
-    if (!db.isOpen()) return;
-
-    QSqlQuery subjectQuery(db);
-    subjectQuery.exec("SELECT subject_id, subject_name FROM subjects ORDER BY subject_id");
-
-    QStringList subjectList;
+    QSqlQuery subjectQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    subjectQuery.prepare(QStringLiteral(
+        "SELECT subject_id, subject_name FROM subjects WHERE teacher_id = ? ORDER BY subject_id"));
+    subjectQuery.addBindValue(m_teacherId);
+    QStringList subjectItems;
     QMap<QString, QString> subjectMap;
-    while (subjectQuery.next()) {
-        QString subjectId = subjectQuery.value(0).toString();
-        QString subjectName = subjectQuery.value(1).toString();
-        QString displayText = QString("%1 - %2").arg(subjectId).arg(subjectName);
-        subjectList << displayText;
-        subjectMap[displayText] = subjectId;
+    if (subjectQuery.exec()) {
+        while (subjectQuery.next()) {
+            const QString text = QStringLiteral("%1 - %2")
+                                     .arg(subjectQuery.value(0).toString(),
+                                          subjectQuery.value(1).toString());
+            subjectItems << text;
+            subjectMap[text] = subjectQuery.value(0).toString();
+        }
     }
-
-    if (subjectList.isEmpty()) {
-        QMessageBox::information(this, "提示", "没有学科数据！");
+    if (subjectItems.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("当前教师还没有课程"));
         return;
     }
 
-    bool ok;
-    QString selectedText = QInputDialog::getItem(this, "选择学科",
-                                                 "请选择学科:", subjectList, 0, false, &ok);
+    bool ok = false;
+    const QString subjectText = QInputDialog::getItem(
+        this, QStringLiteral("选择课程"), QStringLiteral("请选择课程："),
+        subjectItems, 0, false, &ok);
+    if (!ok || subjectText.isEmpty())
+        return;
+    const QString subjectId = subjectMap.value(subjectText);
 
-    if (!ok || selectedText.isEmpty()) return;
+    QStringList semesters;
+    semesters << QStringLiteral("全部学期");
+    QSqlQuery semesterQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    semesterQuery.prepare(QStringLiteral(
+        "SELECT DISTINCT semester FROM grades WHERE subject_id = ? ORDER BY semester DESC"));
+    semesterQuery.addBindValue(subjectId);
+    if (semesterQuery.exec()) {
+        while (semesterQuery.next())
+            semesters << semesterQuery.value(0).toString();
+    }
+    const QString semesterChoice = QInputDialog::getItem(
+        this, QStringLiteral("选择学期"), QStringLiteral("请选择学期："),
+        semesters, 0, false, &ok);
+    if (!ok)
+        return;
+    const QString semester = (semesterChoice == QStringLiteral("全部学期"))
+                                 ? QString()
+                                 : semesterChoice;
 
-    QString selectedSubjectId = subjectMap[selectedText];
-    QString subjectName = selectedText.split(" - ")[1];
-
-    // 选择学期（可选）
-    QString semester = QInputDialog::getText(this, "选择学期",
-                                             "请输入学期（留空表示所有学期）:",
-                                             QLineEdit::Normal, "", &ok);
-
-    if (!ok) return; // 用户点击了取消
-
-    // 查询单科所有学生成绩排名
-    QSqlQuery query(db);
-    QString sql =
-        "SELECT s.student_id, s.name, s.class_name, g.score, "
-        "RANK() OVER (ORDER BY g.score DESC) as ranking "
-        "FROM grades g "
-        "JOIN students s ON g.student_id = s.student_id "
-        "WHERE g.subject_id = ?";
-
+    QString sql = QStringLiteral(
+        "SELECT RANK() OVER (ORDER BY score DESC) AS ranking, "
+        "student_id, student_name, COALESCE(class_name,'未分班'), score, grade_level "
+        "FROM v_student_grades WHERE subject_id = ?");
     QVariantList params;
-    params << selectedSubjectId;
-
-    if (!semester.trimmed().isEmpty()) {
-        sql += " AND g.semester = ?";
-        params << semester.trimmed();
+    params << subjectId;
+    if (!semester.isEmpty()) {
+        sql += QStringLiteral(" AND semester = ?");
+        params << semester;
     }
+    sql += QStringLiteral(" ORDER BY score DESC, class_name, student_id");
 
-    sql += " ORDER BY g.score DESC, s.class_name, s.student_id";
-
+    QSqlQuery query(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
     query.prepare(sql);
-    for (const QVariant &param : params) {
+    for (const QVariant &param : params)
         query.addBindValue(param);
+    if (!query.exec()) {
+        QMessageBox::critical(this, QStringLiteral("查询失败"), query.lastError().text());
+        return;
     }
 
-    // 显示结果
-    QDialog dialog(this);
-    dialog.setWindowTitle(QString("%1 所有学生成绩排名").arg(subjectName));
-    dialog.resize(700, 500);
-
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-    QString titleText = QString("<h2>%1 所有学生成绩排名</h2>").arg(subjectName);
-    if (!semester.trimmed().isEmpty()) {
-        titleText += QString("<h3>学期：%1</h3>").arg(semester.trimmed());
+    QList<QStringList> rows;
+    double sum = 0.0;
+    while (query.next()) {
+        const double score = query.value(4).toDouble();
+        rows << QStringList{query.value(0).toString(), query.value(1).toString(),
+                            query.value(2).toString(), query.value(3).toString(),
+                            QString::number(score, 'f', 1), query.value(5).toString()};
+        sum += score;
     }
 
-    QLabel *titleLabel = new QLabel(titleText, &dialog);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(titleLabel);
-
-    QTableWidget *table = new QTableWidget(&dialog);
-    table->setColumnCount(5);
-    table->setHorizontalHeaderLabels(QStringList() << "排名" << "学号" << "姓名" << "班级" << "成绩");
-
-    if (query.exec()) {
-        int row = 0;
-        while (query.next()) {
-            table->insertRow(row);
-            for (int col = 0; col < 5; col++) {
-                QString text;
-                if (col == 0) text = QString::number(query.value(4).toInt());
-                else if (col == 1) text = query.value(0).toString();
-                else if (col == 2) text = query.value(1).toString();
-                else if (col == 3) text = query.value(2).toString();
-                else if (col == 4) text = QString::number(query.value(3).toDouble(), 'f', 2);
-
-                QTableWidgetItem *item = new QTableWidgetItem(text);
-                if (col == 0) {
-                    int rank = query.value(4).toInt();
-                    item->setForeground(QBrush(rank <= 10 ? Qt::red : Qt::black));
-                    QFont font = item->font();
-                    font.setBold(rank <= 10);
-                    item->setFont(font);
-                } else if (col == 4) {
-                    double score = query.value(3).toDouble();
-                    if (score >= 90) item->setForeground(QBrush(Qt::darkGreen));
-                    else if (score >= 80) item->setForeground(QBrush(Qt::blue));
-                    else if (score >= 60) item->setForeground(QBrush(Qt::black));
-                    else item->setForeground(QBrush(Qt::red));
-                }
-                table->setItem(row, col, item);
-            }
-            row++;
-        }
+    if (rows.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("该课程暂无成绩记录"));
+        return;
     }
 
-    layout->addWidget(table);
-
-    // 按钮
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *exportButton = new QPushButton("导出Excel", &dialog);
-    QPushButton *closeButton = new QPushButton("关闭", &dialog);
-
-    buttonLayout->addWidget(exportButton);
-    buttonLayout->addStretch();
-    buttonLayout->addWidget(closeButton);
-
-    layout->addLayout(buttonLayout);
-
-    connect(exportButton, &QPushButton::clicked, [&]() {
-        QString fileName = QFileDialog::getSaveFileName(&dialog, "保存报表",
-                                                        QDir::homePath() +
-                                                            QString("/%1_所有学生成绩排名.xlsx")
-                                                                .arg(subjectName),
-                                                        "Excel文件 (*.xlsx)");
-        if (!fileName.isEmpty()) {
-            QMessageBox::information(&dialog, "提示", "导出功能正在开发中...");
-        }
-    });
-
-    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
-
-    dialog.exec();
+    const QString summary = QStringLiteral("课程：%1　学期：%2　人数：%3　平均分：%4")
+                                .arg(subjectText,
+                                     semester.isEmpty() ? QStringLiteral("全部") : semester)
+                                .arg(rows.size())
+                                .arg(sum / rows.size(), 0, 'f', 2);
+    showReportDialog(QStringLiteral("%1 所有学生成绩排名").arg(subjectText),
+                     QStringList() << QStringLiteral("排名") << QStringLiteral("学号")
+                                   << QStringLiteral("姓名") << QStringLiteral("班级")
+                                   << QStringLiteral("成绩") << QStringLiteral("等级"),
+                     rows, subjectText + QStringLiteral("_所有学生成绩排名"), summary);
 }
 
-// 7. 辅助方法
 double TeacherMainWindow::calculateGPA(double score)
 {
-    // 简单的GPA计算方法
+    // 与 v_student_overview 中的绩点映射保持一致
     if (score >= 90) return 4.0;
-    else if (score >= 80) return 3.0;
-    else if (score >= 70) return 2.0;
-    else if (score >= 60) return 1.0;
-    else return 0.0;
+    if (score >= 85) return 3.7;
+    if (score >= 82) return 3.3;
+    if (score >= 78) return 3.0;
+    if (score >= 75) return 2.7;
+    if (score >= 72) return 2.3;
+    if (score >= 68) return 2.0;
+    if (score >= 64) return 1.5;
+    if (score >= 60) return 1.0;
+    return 0.0;
 }
 
 QString TeacherMainWindow::getCurrentSemester()
 {
-    QDate currentDate = QDate::currentDate();
-    int year = currentDate.year();
-    int month = currentDate.month();
-
-    // 假设学期1：9月-次年1月，学期2：2月-6月
-    if (month >= 9 || month <= 1) {
-        return QString("%1-%2").arg(year).arg(1);
-    } else {
-        return QString("%1-%2").arg(year).arg(2);
-    }
+    return Validation::semesterForDate();
 }
 
 
@@ -1729,8 +1740,9 @@ void TeacherMainWindow::on_pushButton_next_clicked()
 
 void TeacherMainWindow::on_lineEdit_search_returnPressed()
 {
-    // QString keyword = ui->lineEdit->text().trimmed();
-    // searchStudents(keyword);
+    m_searchKeyword = ui->lineEdit_search->text().trimmed();
+    m_currentPage = 1;
+    refreshStudentList();
 }
 
 
@@ -1742,41 +1754,15 @@ void TeacherMainWindow::on_pushButton_search_clicked()
 
 void TeacherMainWindow::on_listWidget_classes_itemClicked(QListWidgetItem *item)
 {
-    QString text = item->text();
+    if (!item)
+        return;
+    const QString text = item->text();
 
-    if (text == "+ 添加班级") {
-        // 弹出输入对话框添加新班级
-        bool ok;
-        QString className = QInputDialog::getText(this, "添加班级",
-                                                  "请输入班级名称:",
-                                                  QLineEdit::Normal,
-                                                  "", &ok);
-
-        if (ok && !className.trimmed().isEmpty()) {
-            // 检查班级是否已存在
-            for (int i = 0; i < ui->listWidget_classes->count() - 1; i++) { // -1 排除"添加班级"项
-                QListWidgetItem *existingItem = ui->listWidget_classes->item(i);
-                if (existingItem->text() == className) {
-                    QMessageBox::warning(this, "提示", "该班级已存在！");
-                    return;
-                }
-            }
-
-            // 插入新班级（在"全部学生"之后，"添加班级"之前）
-            int insertIndex = ui->listWidget_classes->count() - 1;
-            QListWidgetItem *newItem = new QListWidgetItem(className);
-            ui->listWidget_classes->insertItem(insertIndex, newItem);
-            ui->listWidget_classes->setCurrentItem(newItem);
-
-            // 更新显示
-            loadClassStudents(className);
-        }
-    } else if (text == "全部学生") {
-        // 显示所有学生
-        refreshStudentList();
+    if (text == QStringLiteral("+ 添加班级")) {
+        addClassInteractive();
     } else {
-        // 显示指定班级的学生
-        loadClassStudents(text);
+        m_currentPage = 1;
+        refreshStudentList();
     }
 }
 
@@ -1784,48 +1770,31 @@ void TeacherMainWindow::on_listWidget_classes_itemClicked(QListWidgetItem *item)
 void TeacherMainWindow::on_tableWidget_students_cellDoubleClicked(int row, int column)
 {
     Q_UNUSED(column);
+    if (row < 0 || !ui->tableWidget_students->item(row, 0))
+        return;
 
-    // 从表格获取学生信息
-    QString studentId = ui->tableWidget_students->item(row, 0)->text();
-    QString name = ui->tableWidget_students->item(row, 1)->text();
-    QString gender = ui->tableWidget_students->item(row, 2)->text();
-    int age = ui->tableWidget_students->item(row, 3)->text().toInt();
-    QString className = ui->tableWidget_students->item(row, 4)->text();
-    QString phone = ui->tableWidget_students->item(row, 5)->text();
-    QString address = ui->tableWidget_students->item(row, 6)->text();
+    auto cellText = [this, row](int col) -> QString {
+        QTableWidgetItem *item = ui->tableWidget_students->item(row, col);
+        return item ? item->text() : QString();
+    };
 
-    // 修改：传递教师ID
+    const QString studentId = cellText(0);
+    const QString name = cellText(1);
+    const QString gender = cellText(2);
+    const int age = cellText(3).toInt();
+    const QString className = cellText(4);
+    const QString phone = cellText(5);
+    const QString address = cellText(6);
+
     EditStudentDialog dialog(m_teacherId, studentId, name, gender, age, className, phone, address, this);
-
-    // 获取当前所有班级列表
-    QStringList classList;
-    for (int i = 1; i < ui->listWidget_classes->count() - 1; i++) {
-        QListWidgetItem *item = ui->listWidget_classes->item(i);
-        if (item && item->text() != "全部学生" && item->text() != "+ 添加班级") {
-            classList.append(item->text());
-        }
-    }
-
-    // 设置班级下拉框选项
-    dialog.setClassItems(classList);
+    dialog.setClassItems(classNames());
 
     if (dialog.exec() == QDialog::Accepted) {
-        // 获取修改后的数据
-        QString newStudentId = dialog.getStudentId();
-        QString newName = dialog.getName();
-        QString newGender = dialog.getGender();
-        int newAge = dialog.getAge();
-        QString newClassName = dialog.getClassName();
-        QString newPhone = dialog.getPhone();
-        QString newAddress = dialog.getAddress();
-
-        // 更新到数据库
-        if (updateStudent(studentId, newStudentId, newName, newGender, newAge,
-                          newClassName, newPhone, newAddress)) {
-            QMessageBox::information(this, "成功", "学生信息更新成功！");
+        if (updateStudent(studentId, dialog.getStudentId(), dialog.getName(),
+                          dialog.getGender(), dialog.getAge(), dialog.getClassName(),
+                          dialog.getPhone(), dialog.getAddress())) {
+            refreshClassList();
             refreshStudentList();
-        } else {
-            QMessageBox::critical(this, "错误", "更新失败！");
         }
     }
 }
@@ -1837,16 +1806,13 @@ void TeacherMainWindow::on_action_addStudent_triggered()
 {
     AddStudentDialog dialog(this);
 
-    // 获取当前所有班级列表
-    QStringList classList;
-    for (int i = 1; i < ui->listWidget_classes->count() - 1; i++) {
-        QListWidgetItem *item = ui->listWidget_classes->item(i);
-        if (item && item->text() != "全部学生" && item->text() != "+ 添加班级") {
-            classList.append(item->text());
-        }
+    // 班级数据来自 classes 表（包含空班级）
+    const QStringList classList = classNames();
+    if (classList.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("暂无班级，请先在左侧添加班级"));
+        return;
     }
-
-    // 设置班级下拉框选项
     dialog.setClassItems(classList);
 
     if (dialog.exec() == QDialog::Accepted) {
@@ -1862,6 +1828,7 @@ void TeacherMainWindow::on_action_addStudent_triggered()
         // 添加到数据库
         if (addStudent(studentId, name, gender, age, className, phone, address)) {
             QMessageBox::information(this, "成功", "学生添加成功！");
+            refreshClassList();
             refreshStudentList();
         } else {
             QMessageBox::critical(this, "错误", "添加失败！");
@@ -1872,62 +1839,72 @@ void TeacherMainWindow::on_action_addStudent_triggered()
 
 void TeacherMainWindow::on_action_deleteStudent_triggered()
 {
-    int row = ui->tableWidget_students->currentRow();
-    if (row < 0) {
-        QMessageBox::warning(this, "警告", "请先选择要删除的学生！");
+    const int row = ui->tableWidget_students->currentRow();
+    const QString studentId = selectedStudentId();
+    if (row < 0 || studentId.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("警告"),
+                             QStringLiteral("请先选择要删除的学生！"));
         return;
     }
 
-    // 获取选中学生的信息
-    QString studentId = ui->tableWidget_students->item(row, 0)->text();
-    QString studentName = ui->tableWidget_students->item(row, 1)->text();
+    QTableWidgetItem *nameItem = ui->tableWidget_students->item(row, 1);
+    const QString studentName = nameItem ? nameItem->text() : QString();
 
-    // 显示确认删除对话框
-    ConfirmDeleteDialog dialog(studentId, studentName, this);
+    int gradeCount = 0;
+    QSqlQuery countQuery(DatabaseManager::instance()->getTeacherDatabase(m_teacherId));
+    countQuery.prepare(QStringLiteral("SELECT COUNT(*) FROM grades WHERE student_id = ?"));
+    countQuery.addBindValue(studentId);
+    if (countQuery.exec() && countQuery.next())
+        gradeCount = countQuery.value(0).toInt();
 
-    if (dialog.exec() == QDialog::Accepted) {
-        // 用户点击了"确认删除"
+    QMessageBox box(QMessageBox::Question, QStringLiteral("确认删除"),
+                    QStringLiteral("确定要删除学生【%1 - %2】吗？").arg(studentId, studentName),
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setInformativeText(QStringLiteral(
+        "该操作会同时删除该学生的 %1 条成绩记录，并注销其学生账号，且不可撤销。")
+                               .arg(gradeCount));
+    if (box.exec() == QMessageBox::Yes) {
         if (deleteStudent(studentId)) {
-            QMessageBox::information(this, "成功", "学生删除成功！");
+            QMessageBox::information(this, QStringLiteral("成功"),
+                                     QStringLiteral("学生删除成功"));
+            refreshClassList();
             refreshStudentList();
-        } else {
-            QMessageBox::critical(this, "错误", "删除失败！");
         }
     }
-    // 如果用户点击"取消删除"，什么都不做
 }
 
 
 void TeacherMainWindow::on_action_editStudent_triggered()
 {
-    int row = ui->tableWidget_students->currentRow();
+    const int row = ui->tableWidget_students->currentRow();
     if (row < 0) {
-        QMessageBox::warning(this, "警告", "请先选择要编辑的学生！");
+        QMessageBox::warning(this, QStringLiteral("警告"),
+                             QStringLiteral("请先选择要编辑的学生！"));
         return;
     }
 
-    // 从表格获取当前学生的信息
-    QString studentId = ui->tableWidget_students->item(row, 0)->text();
-    QString name = ui->tableWidget_students->item(row, 1)->text();
-    QString gender = ui->tableWidget_students->item(row, 2)->text();
-    int age = ui->tableWidget_students->item(row, 3)->text().toInt();
-    QString className = ui->tableWidget_students->item(row, 4)->text();
-    QString phone = ui->tableWidget_students->item(row, 5)->text();
-    QString address = ui->tableWidget_students->item(row, 6)->text();
+    auto cellText = [this, row](int column) -> QString {
+        QTableWidgetItem *item = ui->tableWidget_students->item(row, column);
+        return item ? item->text() : QString();
+    };
 
-    // 修改：传递教师ID
+    const QString studentId = cellText(0);
+    const QString name = cellText(1);
+    const QString gender = cellText(2);
+    const int age = cellText(3).toInt();
+    const QString className = cellText(4);
+    const QString phone = cellText(5);
+    const QString address = cellText(6);
+
     EditStudentDialog dialog(m_teacherId, studentId, name, gender, age, className, phone, address, this);
 
-    // 获取当前所有班级列表
-    QStringList classList;
-    for (int i = 1; i < ui->listWidget_classes->count() - 1; i++) {
-        QListWidgetItem *item = ui->listWidget_classes->item(i);
-        if (item && item->text() != "全部学生" && item->text() != "+ 添加班级") {
-            classList.append(item->text());
-        }
+    // 班级数据来自 classes 表（包含空班级）
+    const QStringList classList = classNames();
+    if (classList.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("暂无班级，请先在左侧添加班级"));
+        return;
     }
-
-    // 设置班级下拉框选项
     dialog.setClassItems(classList);
 
     if (dialog.exec() == QDialog::Accepted) {
@@ -1943,10 +1920,10 @@ void TeacherMainWindow::on_action_editStudent_triggered()
         // 更新到数据库
         if (updateStudent(studentId, newStudentId, newName, newGender, newAge,
                           newClassName, newPhone, newAddress)) {
-            QMessageBox::information(this, "成功", "学生信息更新成功！");
+            QMessageBox::information(this, QStringLiteral("成功"),
+                                     QStringLiteral("学生信息更新成功"));
+            refreshClassList();
             refreshStudentList();
-        } else {
-            QMessageBox::critical(this, "错误", "更新失败！");
         }
     }
 }
@@ -1966,7 +1943,7 @@ void TeacherMainWindow::on_action_inputGrade_triggered()
 
 void TeacherMainWindow::on_action_deleteGrade_triggered()
 {
-
+    modifyGrade();
 }
 
 
@@ -2004,29 +1981,13 @@ void TeacherMainWindow::on_action_subjectAll_triggered()
 
 void TeacherMainWindow::on_action_changePassword_triggered()
 {
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QString username = dbManager->getUsernameByUserId(m_teacherId);
-
-    if (username.isEmpty()) {
-        QMessageBox::warning(this, "警告", "无法获取当前用户信息！");
-        return;
-    }
-
-    ChangePasswordDialog dialog(username, this);
+    ChangePasswordDialog dialog(m_teacherId, false, this);
     dialog.exec();
 }
 
 void TeacherMainWindow::on_action_changequestions_triggered()
 {
-    DatabaseManager* dbManager = DatabaseManager::instance();
-    QString username = dbManager->getUsernameByUserId(m_teacherId);
-
-    if (username.isEmpty()) {
-        QMessageBox::warning(this, "警告", "无法获取当前用户信息！");
-        return;
-    }
-
-    ChangeQuestionsDialog dialog(username, this);
+    ChangeQuestionsDialog dialog(m_teacherId, this);
     dialog.exec();
 }
 
@@ -2085,170 +2046,40 @@ void TeacherMainWindow::on_listWidget_classes_customContextMenuRequested(const Q
     QAction *selectedAction = menu.exec(ui->listWidget_classes->mapToGlobal(pos));
 
     if (selectedAction == renameAction) {
-        // 重命名班级
-        bool ok;
-        QString newName = QInputDialog::getText(this, "重命名班级",
-                                                "请输入新的班级名称:",
-                                                QLineEdit::Normal,
-                                                text, &ok);
-
-        if (ok && !newName.trimmed().isEmpty() && newName != text) {
-            // 检查新名称是否已存在
-            for (int i = 0; i < ui->listWidget_classes->count() - 1; i++) {
-                QListWidgetItem *existingItem = ui->listWidget_classes->item(i);
-                if (existingItem != item && existingItem->text() == newName) {
-                    QMessageBox::warning(this, "提示", "该班级名称已存在！");
-                    return;
-                }
-            }
-
-            // 更新数据库中的班级名称
-            QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-            if (db.isOpen()) {
-                QSqlQuery query(db);
-                query.prepare("UPDATE students SET class_name = ? WHERE class_name = ?");
-                query.addBindValue(newName);
-                query.addBindValue(text);
-
-                if (query.exec()) {
-                    item->setText(newName);
-                    QMessageBox::information(this, "成功", "班级重命名成功！");
-                }
-            }
-        }
+        renameClass(text);
     } else if (selectedAction == deleteAction) {
-        // 删除班级确认
-        QMessageBox::StandardButton reply;
-        reply = QMessageBox::question(this, "确认删除",
-                                      QString("确定要删除班级【%1】吗？\n（不会删除学生，只会移除班级分类）").arg(text),
-                                      QMessageBox::Yes | QMessageBox::No);
-
-        if (reply == QMessageBox::Yes) {
-            // 将班级学生的班级字段清空
-            QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-            if (db.isOpen()) {
-                QSqlQuery query(db);
-                query.prepare("UPDATE students SET class_name = '' WHERE class_name = ?");
-                query.addBindValue(text);
-
-                if (query.exec()) {
-                    delete item; // 从列表移除
-                    QMessageBox::information(this, "成功", "班级已删除！");
-                }
-            }
-        }
+        deleteClass(text);
     }
 }
 
 
 void TeacherMainWindow::on_action_add_class_triggered()
 {
-    // 模拟点击"添加班级"按钮
-    QListWidgetItem *addItem = nullptr;
-
-    // 找到"+ 添加班级"这个item
-    for (int i = 0; i < ui->listWidget_classes->count(); i++) {
-        QListWidgetItem *item = ui->listWidget_classes->item(i);
-        if (item->text() == "+ 添加班级") {
-            addItem = item;
-            break;
-        }
-    }
-
-    if (addItem) {
-        // 模拟点击这个item
-        ui->listWidget_classes->setCurrentItem(addItem);
-        // 触发itemClicked信号（会由on_listWidget_classes_itemClicked处理）
-        emit ui->listWidget_classes->itemClicked(addItem);
-    }
+    addClassInteractive();
 }
 
 
 void TeacherMainWindow::on_action_edit_class_triggered()
 {
-    // 获取当前选中的班级
-    QListWidgetItem *currentItem = ui->listWidget_classes->currentItem();
-    if (!currentItem) {
-        QMessageBox::information(this, "提示", "请先选择一个班级");
+    const QString className = currentClassFilter();
+    if (className.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先选择一个班级"));
         return;
     }
-
-    QString text = currentItem->text();
-    if (text == "全部学生" || text == "+ 添加班级") {
-        QMessageBox::information(this, "提示", "该条目不可编辑");
-        return;
-    }
-
-    // 直接调用已有的右键菜单逻辑
-    // 模拟右键菜单中的重命名操作
-    bool ok;
-    QString newName = QInputDialog::getText(this, "重命名班级",
-                                            "请输入新的班级名称:",
-                                            QLineEdit::Normal,
-                                            text, &ok);
-
-    if (ok && !newName.trimmed().isEmpty() && newName != text) {
-        // 检查新名称是否已存在
-        for (int i = 0; i < ui->listWidget_classes->count() - 1; i++) {
-            QListWidgetItem *existingItem = ui->listWidget_classes->item(i);
-            if (existingItem != currentItem && existingItem->text() == newName) {
-                QMessageBox::warning(this, "提示", "该班级名称已存在！");
-                return;
-            }
-        }
-
-        // 更新数据库中的班级名称
-        QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-        if (db.isOpen()) {
-            QSqlQuery query(db);
-            query.prepare("UPDATE students SET class_name = ? WHERE class_name = ?");
-            query.addBindValue(newName);
-            query.addBindValue(text);
-
-            if (query.exec()) {
-                currentItem->setText(newName);
-                QMessageBox::information(this, "成功", "班级重命名成功！");
-            }
-        }
-    }
+    renameClass(className);
 }
 
 
 void TeacherMainWindow::on_action_delete_class_triggered()
 {
-    // 获取当前选中的班级
-    QListWidgetItem *currentItem = ui->listWidget_classes->currentItem();
-    if (!currentItem) {
-        QMessageBox::information(this, "提示", "请先选择一个班级");
+    const QString className = currentClassFilter();
+    if (className.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先选择一个班级"));
         return;
     }
-
-    QString text = currentItem->text();
-    if (text == "全部学生" || text == "+ 添加班级") {
-        QMessageBox::information(this, "提示", "该条目不可删除");
-        return;
-    }
-
-    // 直接调用已有的删除逻辑
-    QMessageBox::StandardButton reply;
-    reply = QMessageBox::question(this, "确认删除",
-                                  QString("确定要删除班级【%1】吗？\n（不会删除学生，只会移除班级分类）").arg(text),
-                                  QMessageBox::Yes | QMessageBox::No);
-
-    if (reply == QMessageBox::Yes) {
-        // 将班级学生的班级字段清空
-        QSqlDatabase db = DatabaseManager::instance()->getTeacherDatabase(m_teacherId);
-        if (db.isOpen()) {
-            QSqlQuery query(db);
-            query.prepare("UPDATE students SET class_name = '' WHERE class_name = ?");
-            query.addBindValue(text);
-
-            if (query.exec()) {
-                delete currentItem; // 从列表移除
-                QMessageBox::information(this, "成功", "班级已删除！");
-            }
-        }
-    }
+    deleteClass(className);
 }
 
 void TeacherMainWindow::on_action_exit_2_triggered()

@@ -4,15 +4,26 @@
 #include "forgotpassworddialog.h"
 #include "ui_logindialog.h"
 
+#include <QLabel>
+#include <QTimer>
+
 LoginDialog::LoginDialog(QWidget *parent)
     : QDialog(parent)
     , ui(new Ui::LoginDialog)
 {
     ui->setupUi(this);
-    setWindowTitle(QStringLiteral("用户登录"));
+    setWindowTitle(QStringLiteral("学生信息管理系统 - 登录"));
 
     // 设置密码框为密码模式
     ui->lineEdit_password->setEchoMode(QLineEdit::Password);
+
+    // 演示账号提示（课程演示版）
+    auto *demoLabel = new QLabel(
+        QStringLiteral("演示账号：admin / admin123　·　teacher01 / 123456　·　2024001 / 123456"),
+        this);
+    demoLabel->setGeometry(10, 270, 500, 20);
+    demoLabel->setAlignment(Qt::AlignCenter);
+    demoLabel->setStyleSheet(QStringLiteral("color:#6b7280;font-size:8pt;"));
 }
 
 LoginDialog::~LoginDialog()
@@ -65,19 +76,35 @@ void LoginDialog::on_pushButton_login_clicked()
     QString password = ui->lineEdit_password->text();
 
     QString userType, userId;
-    bool success = DatabaseManager::instance()->validateUser(username, password, userType, userId);
+    DatabaseManager *manager = DatabaseManager::instance();
+    bool success = manager->validateUser(username, password, userType, userId);
 
     if (success) {
         // 保存用户信息
         m_userType = userType;
         m_userId = userId;
-
+        m_failedAttempts = 0;
         qDebug() << "登录成功，用户类型：" << userType << "，用户ID：" << userId;
         this->accept();  // 关闭对话框并返回 Accepted
     } else {
-        QMessageBox::warning(this, "登录失败", "账号或密码错误");
+        ++m_failedAttempts;
+        QMessageBox::warning(this, QStringLiteral("登录失败"),
+                             manager->lastError().isEmpty()
+                                 ? QStringLiteral("账号或密码错误")
+                                 : manager->lastError());
         ui->lineEdit_password->clear();
         ui->lineEdit_password->setFocus();
+
+        // 简单防爆破：连续 5 次失败后锁定 30 秒
+        if (m_failedAttempts >= 5) {
+            ui->pushButton_login->setEnabled(false);
+            ui->pushButton_login->setText(QStringLiteral("已锁定 30 秒"));
+            QTimer::singleShot(30000, this, [this]() {
+                m_failedAttempts = 0;
+                ui->pushButton_login->setEnabled(true);
+                ui->pushButton_login->setText(QStringLiteral("登录"));
+            });
+        }
     }
 }
 

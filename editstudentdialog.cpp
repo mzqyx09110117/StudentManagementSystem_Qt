@@ -1,6 +1,8 @@
 #include "editstudentdialog.h"
 #include "ui_editstudentdialog.h"
 
+#include "validation.h"
+
 EditStudentDialog::EditStudentDialog(const QString &teacherId,
                                      const QString &studentId,
                                      const QString &name,
@@ -14,32 +16,26 @@ EditStudentDialog::EditStudentDialog(const QString &teacherId,
     , ui(new Ui::EditStudentDialog)
     , m_teacherId(teacherId)
     , m_originalStudentId(studentId)
+    , m_className(className)
 {
     ui->setupUi(this);
     setWindowTitle(QStringLiteral("编辑学生"));
 
-    // 设置年龄范围
-    ui->spinBox_age->setMinimum(0);
+    ui->spinBox_age->setMinimum(5);
     ui->spinBox_age->setMaximum(100);
-
-    // 班级下拉框设置为不可编辑
     ui->comboBox_class->setEditable(false);
 
-    // 填充现有数据
     ui->lineEdit_studentId->setText(studentId);
-    ui->lineEdit_studentId->setReadOnly(true);  // 学号不可编辑
+    ui->lineEdit_studentId->setReadOnly(true);
     ui->lineEdit_name->setText(name);
 
-    // 设置性别
-    int genderIndex = ui->comboBox_gender->findText(gender);
-    if (genderIndex >= 0) {
+    const int genderIndex = ui->comboBox_gender->findText(gender);
+    if (genderIndex >= 0)
         ui->comboBox_gender->setCurrentIndex(genderIndex);
-    }
 
-    ui->spinBox_age->setValue(age);
+    ui->spinBox_age->setValue(qMax(5, age));
     ui->lineEdit_phone->setText(phone);
     ui->lineEdit_address->setText(address);
-    ui->comboBox_class->setCurrentText(className);
 }
 
 EditStudentDialog::~EditStudentDialog()
@@ -47,25 +43,15 @@ EditStudentDialog::~EditStudentDialog()
     delete ui;
 }
 
-// 添加：设置班级下拉框选项
 void EditStudentDialog::setClassItems(const QStringList &items)
 {
-    // 保存当前选中的班级
-    QString currentClass = ui->comboBox_class->currentText();
-
-    // 清空并添加所有班级选项
     ui->comboBox_class->clear();
-    ui->comboBox_class->addItems(items);
+    ui->comboBox_class->addItem(QStringLiteral("未分班"), QString());
+    for (const QString &className : items)
+        ui->comboBox_class->addItem(className, className);
 
-    // 恢复当前选中的班级，如果不存在就保留为文本
-    if (!currentClass.isEmpty()) {
-        int index = ui->comboBox_class->findText(currentClass);
-        if (index >= 0) {
-            ui->comboBox_class->setCurrentIndex(index);
-        } else {
-            ui->comboBox_class->setCurrentText(currentClass);
-        }
-    }
+    const int index = ui->comboBox_class->findData(m_className);
+    ui->comboBox_class->setCurrentIndex(index >= 0 ? index : 0);
 }
 
 QString EditStudentDialog::getStudentId() const
@@ -90,7 +76,7 @@ int EditStudentDialog::getAge() const
 
 QString EditStudentDialog::getClassName() const
 {
-    return ui->comboBox_class->currentText().trimmed();
+    return ui->comboBox_class->currentData().toString();
 }
 
 QString EditStudentDialog::getPhone() const
@@ -105,45 +91,31 @@ QString EditStudentDialog::getAddress() const
 
 void EditStudentDialog::on_pushButton_confirm_clicked()
 {
-    // 验证必填字段
-    if (getStudentId().isEmpty()) {
-        QMessageBox::warning(this, "警告", "学号不能为空！");
-        return;
-    }
-    if (getName().isEmpty()) {
-        QMessageBox::warning(this, "警告", "姓名不能为空！");
+    const QString nameError = Validation::nameError(getName());
+    if (!nameError.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("警告"), nameError);
+        ui->lineEdit_name->setFocus();
         return;
     }
 
-    QString phone = getPhone().trimmed();  // 去除前后空格
-
-    if (!phone.isEmpty()) {
-        // 检查长度是否为11位
-        if (phone.length() != 11) {
-            QMessageBox::warning(this, "警告", "手机号必须是11位！");
-            return;
-        }
-
-        // 检查开头是否为1
-        if (!phone.startsWith('1')) {
-            QMessageBox::warning(this, "警告", "手机号必须以1开头！");
-            return;
-        }
-
-        // 检查是否全为数字
-        static QRegularExpression re("^\\d+$");
-        if (!re.match(phone).hasMatch()) {
-            QMessageBox::warning(this, "警告", "手机号必须全部由数字组成！");
-            return;
-        }
+    const QString phoneError = Validation::phoneError(getPhone());
+    if (!phoneError.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("警告"), phoneError);
+        ui->lineEdit_phone->setFocus();
+        return;
     }
 
-    accept();  // 关闭对话框并返回Accepted
+    if (getAge() < 5 || getAge() > 100) {
+        QMessageBox::warning(this, QStringLiteral("警告"),
+                             QStringLiteral("年龄必须在 5-100 之间"));
+        ui->spinBox_age->setFocus();
+        return;
+    }
+
+    accept();
 }
-
 
 void EditStudentDialog::on_pushButton_cancel_clicked()
 {
-        reject();  // 关闭对话框并返回Rejected
+    reject();
 }
-

@@ -53,7 +53,7 @@
     </font>
    </property>
    <property name="text">
-    <string>学生管理注册系统</string>
+    <string>学生信息管理系统 · 注册</string>
    </property>
    <property name="alignment">
     <set>Qt::AlignmentFlag::AlignCenter</set>

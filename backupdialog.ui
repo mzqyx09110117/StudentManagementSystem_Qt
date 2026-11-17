@@ -227,7 +227,7 @@
     </size>
    </property>
    <property name="text">
-    <string>系统数据库信息：</string>
+    <string>当前数据库：</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_6">
@@ -252,7 +252,7 @@
     </size>
    </property>
    <property name="text">
-    <string>教师数据库统计：</string>
+    <string>数据量：</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_7">
@@ -277,7 +277,7 @@
     </size>
    </property>
    <property name="text">
-    <string>总备份大小：</string>
+    <string>文件大小：</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_8">
@@ -333,7 +333,7 @@
     </font>
    </property>
    <property name="text">
-    <string>备份系统</string>
+    <string>数据库备份</string>
    </property>
    <property name="alignment">
     <set>Qt::AlignmentFlag::AlignCenter</set>

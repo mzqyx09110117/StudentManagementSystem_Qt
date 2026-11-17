@@ -1,0 +1,32 @@
+# Qt / qmake build outputs
+build/
+build-*/
+release/
+debug/
+*.o
+*.obj
+*.exe
+*.dll
+
+# Deployment and submission staging
+deploy/
+提交/
+
+# Runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+selftest.log
+selftest_backup.db
+
+# Generated previews / temporary tooling
+docs/_preview/
+tools/_*
+
+# IDE
+.qtcreator/
+*.pro.user
+
+# Generated PDF is not part of the submission
+docs/*.pdf
